@@ -2,8 +2,6 @@
 #define MOTOR_CONTROL_H
 
 #include <Arduino.h>
-#include "WiFi.h"
-#include <HTTPClient.h>
 #include "driver/pcnt.h"
 
 #define BRAKE 0
