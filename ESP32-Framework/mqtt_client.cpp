@@ -4,8 +4,6 @@
 #include <WiFiClientSecure.h>
 #include <PubSubClient.h>
 
-#include "motor_control.h"
-
 // =======================
 // Defaults (pode editar aqui)
 // =======================
@@ -19,8 +17,7 @@ static const char* DEF_MQTT_PASS     = "&a9<Vzb3sC0A!6ZB>xTm";
 static bool        DEF_INSECURE_TLS  = true;  // true = setInsecure() (teste rápido)
 
 // Tópico de subscribe
-static const char* DEF_SUB_TOPIC     = "facemesh/cmd";
-static const char* DEF_PUB_TOPIC     = "facemesh/pong";
+static const char* DEF_SUB_TOPIC     = "facemesh/offset";
 
 // Root CA (opcional). Exemplo:
 // static const char* DEF_ROOT_CA_PEM = R"EOF(
@@ -43,7 +40,6 @@ static const char* g_mqtt_pass   = DEF_MQTT_PASS;
 static bool        g_insecureTLS = DEF_INSECURE_TLS;
 
 static const char* g_sub_topic   = DEF_SUB_TOPIC;
-static const char* g_pub_topic   = DEF_PUB_TOPIC;
 static const char* g_root_ca_pem = DEF_ROOT_CA_PEM;
 
 // =======================
@@ -58,17 +54,6 @@ static PubSubClient     g_mqtt_client(g_secure_client);
 static void setup_wifi();
 static void mqtt_callback(char* topic, uint8_t* payload, unsigned int length);
 static void mqtt_reconnect();
-static void handle_command_message(const String& payload);
-static bool parse_command_payload(const String& payload,
-                                  String& command,
-                                  String& nonce,
-                                  String& timestamp);
-static bool execute_robot_command(const String& command);
-static void publish_pong(const String& nonce,
-                         const String& timestamp,
-                         unsigned long executed_at,
-                         const String& command,
-                         bool success);
 
 // =======================
 // Implementação dos setters
@@ -90,10 +75,6 @@ void net_set_broker(const char* host, int port,
 
 void net_set_topic(const char* topic) {
   g_sub_topic = topic;
-}
-
-void net_set_pub_topic(const char* topic) {
-  g_pub_topic = topic;
 }
 
 void net_set_root_ca(const char* root_ca_pem) {
@@ -139,11 +120,11 @@ static void mqtt_callback(char* topic, uint8_t* payload, unsigned int length) {
     msg += static_cast<char>(payload[i]);
   }
 
-  Serial.print(F("Payload: "));
+  Serial.print(F("Valor (dx): "));
   Serial.println(msg);
   Serial.println(F("-----------------------"));
 
-  handle_command_message(msg);
+  // TODO: integrar aqui: controle de servo/motores conforme 'msg'
 }
 
 static void mqtt_reconnect() {
@@ -201,117 +182,4 @@ void net_mqtt_loop() {
 bool net_mqtt_publish(const char* topic, const char* payload) {
   if (!g_mqtt_client.connected()) return false;
   return g_mqtt_client.publish(topic, payload);
-}
-
-static void handle_command_message(const String& payload) {
-  String command;
-  String nonce;
-  String timestamp;
-  if (!parse_command_payload(payload, command, nonce, timestamp)) {
-    Serial.println(F("[MQTT] Comando inválido (formato esperado: comando|nonce|timestamp)."));
-    return;
-  }
-
-  Serial.print(F("[MQTT] Comando recebido: "));
-  Serial.print(command);
-  Serial.print(F(" | nonce="));
-  Serial.print(nonce);
-  Serial.print(F(" | t0="));
-  Serial.println(timestamp);
-
-  bool success = execute_robot_command(command);
-  unsigned long executed_at = millis();
-  publish_pong(nonce, timestamp, executed_at, command, success);
-}
-
-static bool parse_command_payload(const String& payload,
-                                  String& command,
-                                  String& nonce,
-                                  String& timestamp) {
-  int first_sep = payload.indexOf('|');
-  if (first_sep < 0) return false;
-
-  int second_sep = payload.indexOf('|', first_sep + 1);
-  if (second_sep < 0) return false;
-
-  command = payload.substring(0, first_sep);
-  command.trim();
-
-  nonce = payload.substring(first_sep + 1, second_sep);
-  nonce.trim();
-
-  timestamp = payload.substring(second_sep + 1);
-  timestamp.trim();
-
-  return !(command.length() == 0 || nonce.length() == 0 || timestamp.length() == 0);
-}
-
-static bool execute_robot_command(const String& command) {
-  String cmdLower = command;
-  cmdLower.toLowerCase();
-
-  if (cmdLower == "forward") {
-    Forward();
-    return true;
-  }
-  if (cmdLower == "reverse") {
-    Reverse();
-    return true;
-  }
-  if (cmdLower == "left") {
-    TurnLeft();
-    return true;
-  }
-  if (cmdLower == "right") {
-    TurnRight();
-    return true;
-  }
-  if (cmdLower == "stop") {
-    Stop();
-    return true;
-  }
-  if (cmdLower == "lock") {
-    Lock();
-    return true;
-  }
-
-  Serial.print(F("[MQTT] Comando desconhecido: "));
-  Serial.println(command);
-  return false;
-}
-
-static void publish_pong(const String& nonce,
-                         const String& timestamp,
-                         unsigned long executed_at,
-                         const String& command,
-                         bool success) {
-  if (!g_pub_topic || !*g_pub_topic) {
-    Serial.println(F("[MQTT] Tópico de pong não configurado."));
-    return;
-  }
-
-  String payload = nonce;
-  payload += '|';
-  payload += timestamp;
-  payload += '|';
-  payload += String(executed_at);
-  payload += '|';
-  payload += command;
-  payload += '|';
-  payload += (success ? F("ok") : F("error"));
-
-  if (!g_mqtt_client.connected()) {
-    Serial.println(F("[MQTT] Não conectado – não é possível enviar pong."));
-    return;
-  }
-
-  bool published = g_mqtt_client.publish(g_pub_topic, payload.c_str());
-  if (published) {
-    Serial.print(F("[MQTT] Pong publicado em "));
-    Serial.print(g_pub_topic);
-    Serial.print(F(" | payload="));
-    Serial.println(payload);
-  } else {
-    Serial.println(F("[MQTT] Falha ao publicar pong."));
-  }
 }
