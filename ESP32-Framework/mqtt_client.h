@@ -13,8 +13,6 @@ void net_set_broker(const char* host, int port,
                     bool insecureTLS);
 // Define o tópico de subscribe (ex.: "facemesh/offset")
 void net_set_topic(const char* topic);
-// Define o tópico padrão para respostas (pong)
-void net_set_pub_topic(const char* topic);
 
 // (Opcional) definir Root CA (PEM) para validação TLS.
 // Se definido E insecureTLS=false em net_set_broker, usará setCACert(rootCA).
