@@ -9,8 +9,10 @@ let video;
 let faces = [];
 
 // ---------- MQTT ----------
-const mqttUrl   = "wss://0e51aa7bffcf45618c342e30a71338e8.s1.eu.hivemq.cloud:8884/mqtt";
-const mqttTopic = "facemesh/angle"; // publica YAW calibrado (graus)
+const mqttUrl      = "wss://0e51aa7bffcf45618c342e30a71338e8.s1.eu.hivemq.cloud:8884/mqtt";
+const mqttTopic    = "facemesh/angle"; // publica YAW calibrado (graus)
+const commandTopic = "facemesh/cmd";   // comandos para o robô + medição RTT
+const pongTopic    = "facemesh/pong";  // respostas do ESP32 com nonce/timestamp
 
 const connectOptions = {
   username: "hivemq.webclient.1761227941253",
@@ -20,6 +22,28 @@ const connectOptions = {
 
 let client;
 let mqttInitialized = false;
+
+// ---------- Medição de latência (RTT) ----------
+const perf = (typeof performance !== 'undefined') ? performance : { now: () => Date.now() };
+const pendingCommands = new Map();
+const latencyStats = {
+  lastRtt: null,
+  min: null,
+  max: null,
+  avg: 0,
+  count: 0,
+  lastCommand: null,
+  lastStatus: null,
+  lastT0: null,
+  lastExecutedAt: null,
+  lastReceivedAt: null
+};
+
+const COMMAND_DEBOUNCE_MS = 250;   // tempo mínimo entre mudanças de comando
+const COMMAND_REPEAT_MS   = 2000;  // reenvia mesmo comando periodicamente para medir
+const COMMAND_TIMEOUT_MS  = 5000;  // expira RTT caso não haja pong
+let lastCommandSent = null;
+let lastCommandSentAt = 0;
 
 // ---------- Calibração (tara) ----------
 let yawOffset = 0, pitchOffset = 0, rollOffset = 0;
@@ -103,6 +127,8 @@ function gotFaces(results) {
 function draw() {
   background(0);
 
+  reapExpiredCommands();
+
   // -------- desenha o VÍDEO (robusto + ESPELHADO) --------
   const { vw, vh } = getVideoDims();
 
@@ -135,6 +161,13 @@ function draw() {
 
       client.on("connect", function() {
         console.log("MQTT Conectado!");
+        client.subscribe(pongTopic, function(err) {
+          if (err) {
+            console.warn("Falha ao inscrever em", pongTopic, err);
+          } else {
+            console.log("Inscrito em", pongTopic);
+          }
+        });
         // inicia FaceMesh só após MQTT on-line (opcional; mantém sequenciamento)
         faceMesh.detectStart(video, gotFaces);
       });
@@ -144,6 +177,11 @@ function draw() {
       });
       client.on("reconnect", function() {
         console.log("MQTT Reconectando...");
+      });
+      client.on("message", function(topic, message) {
+        if (topic === pongTopic) {
+          handlePongMessage(message.toString());
+        }
       });
     } else {
       fill(255, 0, 0);
@@ -223,6 +261,9 @@ function draw() {
         }
       }
 
+      const desiredCommand = decideRobotCommand(yawCal, pitchCal);
+      maybeSendCommand(desiredCommand);
+
       // ---- Desenho dos keypoints/linhas ESPELHADOS no CANVAS ----
       const mapPtMirror = (p) => ({
         x: drawRect.x + (drawRect.w - p.x * drawRect.sx),
@@ -265,9 +306,11 @@ function draw() {
 
     } else {
       drawNoFace();
+      maybeSendCommand('stop');
     }
   } else {
     drawNoFace();
+    maybeSendCommand('stop');
   }
 
   // -------- FPS: EMA --------
@@ -281,6 +324,138 @@ function draw() {
   fill(0);
   textSize(14);
   text(`FPS: ${fpsEMA.toFixed(1)}`, width - 130, 28);
+
+  drawLatencyHUD();
+}
+
+// ---------- Controle do robô + RTT ----------
+function decideRobotCommand(yawCal, pitchCal) {
+  const yawDeadband = 8;   // graus
+  const pitchDeadband = 10;
+
+  if (pitchCal <= -pitchDeadband) return 'forward';   // cabeça para baixo -> frente
+  if (pitchCal >= pitchDeadband)  return 'reverse';   // cabeça para cima -> ré
+  if (yawCal <= -yawDeadband)     return 'left';      // vira para a esquerda
+  if (yawCal >= yawDeadband)      return 'right';     // vira para a direita
+  return 'stop';
+}
+
+function maybeSendCommand(command) {
+  if (!command) return;
+  if (!client || !client.connected) return;
+
+  const now = millis();
+  const changed = command !== lastCommandSent;
+  const urgent = command === 'stop';
+  if (!changed && (now - lastCommandSentAt) < COMMAND_REPEAT_MS) return;
+  if (changed && !urgent && (now - lastCommandSentAt) < COMMAND_DEBOUNCE_MS) return;
+
+  sendRobotCommand(command);
+}
+
+function sendRobotCommand(command) {
+  if (!client || !client.connected) return;
+
+  const nonce = generateNonce();
+  const t0 = Date.now();
+  const payload = `${command}|${nonce}|${t0}`;
+
+  client.publish(commandTopic, payload);
+  pendingCommands.set(nonce, {
+    command,
+    t0,
+    perfStart: perf.now()
+  });
+
+  lastCommandSent = command;
+  lastCommandSentAt = millis();
+  latencyStats.lastCommand = command;
+  latencyStats.lastStatus = 'pendente';
+
+  console.log(`MQTT [${commandTopic}] cmd=${command} nonce=${nonce} t0=${t0}`);
+}
+
+function handlePongMessage(rawMessage) {
+  const parts = rawMessage.split('|');
+  if (parts.length < 3) {
+    console.warn('Pong inválido:', rawMessage);
+    return;
+  }
+
+  const [nonce, t0Str, execTsStr, commandEcho = '', status = 'ok'] = parts;
+  const pending = pendingCommands.get(nonce);
+  if (!pending) {
+    console.warn('Pong sem pendência correspondente:', rawMessage);
+    return;
+  }
+
+  pendingCommands.delete(nonce);
+
+  const nowPerf = perf.now();
+  const rtt = nowPerf - pending.perfStart;
+  const prevCount = latencyStats.count;
+  const statusText = status || 'ok';
+
+  latencyStats.count = prevCount + 1;
+  latencyStats.lastRtt = rtt;
+  latencyStats.min = prevCount === 0 ? rtt : Math.min(latencyStats.min, rtt);
+  latencyStats.max = prevCount === 0 ? rtt : Math.max(latencyStats.max, rtt);
+  latencyStats.avg = prevCount === 0 ? rtt : ((latencyStats.avg * prevCount) + rtt) / (prevCount + 1);
+  latencyStats.lastCommand = commandEcho || pending.command;
+  latencyStats.lastStatus = statusText;
+  latencyStats.lastT0 = t0Str;
+  latencyStats.lastExecutedAt = execTsStr || null;
+  latencyStats.lastReceivedAt = Date.now();
+
+  console.log(`PONG nonce=${nonce} comando=${latencyStats.lastCommand} status=${statusText} RTT=${rtt.toFixed(1)} ms`);
+}
+
+function reapExpiredCommands() {
+  if (pendingCommands.size === 0) return;
+
+  const nowPerf = perf.now();
+  for (const [nonce, entry] of pendingCommands) {
+    if (nowPerf - entry.perfStart > COMMAND_TIMEOUT_MS) {
+      console.warn(`Timeout aguardando pong para nonce=${nonce} (cmd=${entry.command})`);
+      pendingCommands.delete(nonce);
+      latencyStats.lastCommand = entry.command;
+      latencyStats.lastStatus = 'timeout';
+      latencyStats.lastRtt = null;
+    }
+  }
+}
+
+function drawLatencyHUD() {
+  const panelWidth = 320;
+  const panelHeight = 96;
+  const panelX = width - panelWidth - 10;
+  const panelY = 46;
+
+  fill(255);
+  noStroke();
+  rect(panelX, panelY, panelWidth, panelHeight, 6);
+
+  fill(0);
+  textSize(14);
+
+  const lastRttTxt = (latencyStats.lastRtt !== null)
+    ? `${latencyStats.lastRtt.toFixed(1)} ms`
+    : '—';
+  const minTxt = latencyStats.count > 0 ? `${latencyStats.min.toFixed(1)} ms` : '—';
+  const maxTxt = latencyStats.count > 0 ? `${latencyStats.max.toFixed(1)} ms` : '—';
+  const avgTxt = latencyStats.count > 0 ? `${latencyStats.avg.toFixed(1)} ms` : '—';
+  const statusTxt = latencyStats.lastStatus || '—';
+  const cmdTxt = latencyStats.lastCommand || '—';
+  const pendingCount = pendingCommands.size;
+
+  text(`RTT último: ${lastRttTxt}`, panelX + 10, panelY + 24);
+  text(`Mín/Máx/Média: ${minTxt} / ${maxTxt} / ${avgTxt}`, panelX + 10, panelY + 44);
+  text(`Último comando: ${cmdTxt} (${statusTxt})`, panelX + 10, panelY + 64);
+  text(`Amostras: ${latencyStats.count} • Pendentes: ${pendingCount}`, panelX + 10, panelY + 84);
+}
+
+function generateNonce() {
+  return Math.random().toString(36).slice(2, 10) + Math.floor(perf.now()).toString(36);
 }
 
 // ---------- Helpers geométricos ----------
