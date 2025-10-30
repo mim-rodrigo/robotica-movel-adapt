@@ -15,3 +15,9 @@ void net_set_yaw_deadband(float deadband_deg);
 
 // Envia texto bruto para todos os clientes conectados (debug opcional).
 void net_ws_broadcast(const String& message);
+
+// Ativa/desativa TLS (WSS). Deve ser chamado antes de net_ws_begin().
+void net_enable_tls(bool enabled);
+
+// Substitui o certificado/chave padrão em PEM (strings terminadas em \n).
+void net_set_tls_credentials(const char* cert_pem, const char* key_pem);

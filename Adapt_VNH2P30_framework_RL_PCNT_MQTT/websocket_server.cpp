@@ -25,8 +25,69 @@ static float g_yaw_deadband = DEF_YAW_DEADBAND;
 // =======================
 // Objetos globais do módulo
 // =======================
-static AsyncWebServer g_http_server(80);
+static const char DEFAULT_TLS_CERT[] =
+    "-----BEGIN CERTIFICATE-----\n"
+    "MIIDxTCCAq2gAwIBAgIURCaR/PJuG85CVtG1Zm7kNLEu2TswDQYJKoZIhvcNAQEL\n"
+    "BQAwcjELMAkGA1UEBhMCQlIxCzAJBgNVBAgMAk1HMRUwEwYDVQQHDAxKdWl6IGRl\n"
+    "IEZvcmExFjAUBgNVBAoMDVByb2pldG8gQWRhcHQxETAPBgNVBAsMCFJvYm90aWNz\n"
+    "MRQwEgYDVQQDDAtlc3AzMi5sb2NhbDAeFw0yNTEwMzAxOTE1NDBaFw0yNjEwMzAx\n"
+    "OTE1NDBaMHIxCzAJBgNVBAYTAkJSMQswCQYDVQQIDAJNRzEVMBMGA1UEBwwMSnVp\n"
+    "eiBkZSBGb3JhMRYwFAYDVQQKDA1Qcm9qZXRvIEFkYXB0MREwDwYDVQQLDAhSb2Jv\n"
+    "dGljczEUMBIGA1UEAwwLZXNwMzIubG9jYWwwggEiMA0GCSqGSIb3DQEBAQUAA4IB\n"
+    "DwAwggEKAoIBAQCKUWsGIobq/mbrOMXXjJ8fiABroaYyFUDrBOrM1Wr1C/LLMqIF\n"
+    "bKxdH3F0mR1rTiwjVM0Qn5lIVQ/ciTqaxqNEnr+Yq6l3r7NkReNF7f3ViVMY73Dl\n"
+    "zbjD/JF6qgjz6WodoW4XnNSTtVSpNRSxJ9QWhmltIiQnMXn8WBuzejMEGSMU1pzT\n"
+    "u3H/JdWK38IP9quOJnS18mIbFsc6NF8kGUEC+B5chmVw22K8yWeTkSjEwSDJOf2H\n"
+    "pnfJtr/RVUI/0VIr/nTRlwK92Y9NfigaYixQch9EvAPW22uXnI0AOY7v14cKbg3t\n"
+    "7VSzWLT/r9KwckZzu0rvyM3jYPEwTowBWa87AgMBAAGjUzBRMB0GA1UdDgQWBBTX\n"
+    "bQ56nexEby5gIoxnzcNkFR/zNzAfBgNVHSMEGDAWgBTXbQ56nexEby5gIoxnzcNk\n"
+    "FR/zNzAPBgNVHRMBAf8EBTADAQH/MA0GCSqGSIb3DQEBCwUAA4IBAQBwBWKgIUJq\n"
+    "bpZ0/xQZ5sn4LHliBU5D2m1i00VEPqAtWZLay1/pHVb8IE4Jxsj6kqKsQcOZ2WEm\n"
+    "dC6YnnUkvXuJFjeUJ4qTrXg7fLXGsooyM0ykhA4e02gouN7tIK1I8gdPGfEWANDO\n"
+    "Vg9Jb3BKj6mIrIsOs19UKZ20SP8FzwdOBNw15iFW7vCUkuo3ei9hsgn+/tqlTD3g\n"
+    "wbBsHEny6ZpeVTRWTcSlQIS/CViolfLtAoEJDLup3UN3RIpbB+uBATMpEhjxG0M+\n"
+    "5k9ZveV0TtRHNZJIBjrw0Ho3q8kLyZYquVKfSX/51jF8rIw2xny3bkU8dzFe+o/Y\n"
+    "jCY0zckIKXso\n"
+    "-----END CERTIFICATE-----\n";
+
+static const char DEFAULT_TLS_KEY[] =
+    "-----BEGIN PRIVATE KEY-----\n"
+    "MIIEvAIBADANBgkqhkiG9w0BAQEFAASCBKYwggSiAgEAAoIBAQCKUWsGIobq/mbr\n"
+    "OMXXjJ8fiABroaYyFUDrBOrM1Wr1C/LLMqIFbKxdH3F0mR1rTiwjVM0Qn5lIVQ/c\n"
+    "iTqaxqNEnr+Yq6l3r7NkReNF7f3ViVMY73DlzbjD/JF6qgjz6WodoW4XnNSTtVSp\n"
+    "NRSxJ9QWhmltIiQnMXn8WBuzejMEGSMU1pzTu3H/JdWK38IP9quOJnS18mIbFsc6\n"
+    "NF8kGUEC+B5chmVw22K8yWeTkSjEwSDJOf2HpnfJtr/RVUI/0VIr/nTRlwK92Y9N\n"
+    "figaYixQch9EvAPW22uXnI0AOY7v14cKbg3t7VSzWLT/r9KwckZzu0rvyM3jYPEw\n"
+    "TowBWa87AgMBAAECggEAPOnFLaL38rZNocpTSm1JyEuPD9dVBxpYCAgW1VUpcLgt\n"
+    "2PG365ajw7DsuJITpCV9h6O5WVhH21Rmk1M15WKUFUyqCPSUQbq1UHP8tlesYSVE\n"
+    "XKdZ+0IhW+I3OSN3pN8G1fy5LJnq/g+ttITFU408OB1CgYa3EDGYTJqKvHwUynkX\n"
+    "uw+iMCRfIY34YD4fIWFa395ufmwURspfLuZ0EiibRdRlRO6IOUoV9+2sLENyOIh7\n"
+    "Tf61JMYX7Ql6MEDneOrdV3UqHoYM6qYKIucCrwY3OF3xPK6j0D3hMP9c94P9zrVt\n"
+    "+LiJQ2NrsK5UmC7V5Xrusip6ZDNG6gCN8v0dlRAOgQKBgQC+YjNSkru0QurGGfFi\n"
+    "VNjuNH8mzEaPIH6g0rpa7CROMdoYp5V0caheExwXBiEoTfnBrcu++pZ6gBec5EPU\n"
+    "mGa71DL+Gt8XGGyJecWhTLTpZ8FRxS3nB7HxlPluRzzdZ5BQmi+gKFVeXAw8w+U+\n"
+    "Aj0+zy6u8+zamZesuYs3WJruuwKBgQC5/WdieImip+5RcelK534eRSgkPRaE26Qu\n"
+    "rW2iYKw5cuYxp4ygFjfvLyDpTo6xJQgUR81tMHrzSRqFFC8IwoiB+8qLhV51b0Qv\n"
+    "+2LLF8Sz1N6KKTPtaMZFcZK5Zvr4SB2Eko6jzujsCaRi2jj3cc8KqF3A2ILNSpSR\n"
+    "K7xpWMN5gQKBgEE2wB/L1XI07di38EBfkgNehiOTG6RRXC7YoC8e7ny+hNenKAHA\n"
+    "IQ1AfIHCfr8gnqniT4V2ru79S5lZc4ayQZabZHA4Yiy2GA+rX7AV526ANO8+nK+j\n"
+    "qid3gU1uJ4IrxHpnpmK1DjEJVMPH0pHAEJygOXyCX6KttA/darulpUSbAoGAJsH4\n"
+    "vltyCxRFpHFBdVuCO5qbv9l/DNacgyGe3BybJymbcLOCqYWXyF8g052MPLwDz/4a\n"
+    "f+t/Y51TSnInTwMC4VtwHN0BDyXNptYTA1GDqxnr+gyWBp4z2xrMwZgFKqIUjKDh\n"
+    "2p7uiOmFeRgSkPYFeCoXx20W7OLizNG5ZJabvYECgYBCnNhEDfNDEpaF3KJeR03c\n"
+    "ASGDrdo5JJF3iPTzYZW9yO0zfxin4f/YIgZLzldZbzKQgVAXWAaNI2kHIyDy5u0N\n"
+    "o33Kut6jeDfWi5WWRaPWBtRGz381BHR6mFyZV7H8BYO1f+WGSiStYQ8g5OQOLzVb\n"
+    "Pl0oBcJCz1Jjht7+aXN61w==\n"
+    "-----END PRIVATE KEY-----\n";
+
+static AsyncWebServer* g_http_server = nullptr;
 static AsyncWebSocket g_ws("/ws");
+
+static bool g_tls_enabled = true;
+static const char* g_tls_cert_override = nullptr;
+static const char* g_tls_key_override = nullptr;
+static String g_tls_cert_buffer;
+static String g_tls_key_buffer;
 
 // =======================
 // Prototypes internos
@@ -70,6 +131,29 @@ void net_ws_broadcast(const String& message) {
   g_ws.textAll(message);
 }
 
+void net_enable_tls(bool enabled) {
+  g_tls_enabled = enabled;
+}
+
+void net_set_tls_credentials(const char* cert_pem, const char* key_pem) {
+  g_tls_cert_override = cert_pem;
+  g_tls_key_override = key_pem;
+}
+
+static bool prepare_tls_buffers() {
+  const char* cert_source = g_tls_cert_override ? g_tls_cert_override : DEFAULT_TLS_CERT;
+  const char* key_source = g_tls_key_override ? g_tls_key_override : DEFAULT_TLS_KEY;
+
+  if (!cert_source || !key_source) {
+    return false;
+  }
+
+  g_tls_cert_buffer = cert_source;
+  g_tls_key_buffer = key_source;
+
+  return g_tls_cert_buffer.length() > 0 && g_tls_key_buffer.length() > 0;
+}
+
 // =======================
 // WiFi + WebSocket
 // =======================
@@ -104,11 +188,43 @@ static void setup_wifi() {
 void net_ws_begin() {
   setup_wifi();
 
-  g_ws.onEvent(handle_ws_event);
-  g_http_server.addHandler(&g_ws);
-  g_http_server.begin();
+  if (g_http_server) {
+    delete g_http_server;
+    g_http_server = nullptr;
+  }
 
-  Serial.println(F("WebSocket disponível em ws://<ip>/ws"));
+  bool tls_ready = false;
+  if (g_tls_enabled) {
+    tls_ready = prepare_tls_buffers();
+    if (!tls_ready) {
+      Serial.println(F("[TLS] Certificado ou chave ausentes. Voltando para WS sem criptografia."));
+    }
+  }
+
+#if defined(ASYNC_TCP_SSL_ENABLED) && ASYNC_TCP_SSL_ENABLED
+  const bool tls_supported = true;
+#else
+  const bool tls_supported = false;
+#endif
+
+  if (tls_ready && !tls_supported) {
+    Serial.println(F("[TLS] A biblioteca AsyncTCP foi compilada sem suporte a SSL. Voltando para WS sem criptografia."));
+    tls_ready = false;
+  }
+
+  const uint16_t port = tls_ready ? 443 : 80;
+  g_http_server = new AsyncWebServer(port);
+
+  g_ws.onEvent(handle_ws_event);
+  g_http_server->addHandler(&g_ws);
+
+  if (tls_ready) {
+    g_http_server->beginSecure(g_tls_cert_buffer.c_str(), g_tls_key_buffer.c_str(), nullptr);
+    Serial.println(F("WebSocket disponível em wss://<ip>/ws (porta 443)"));
+  } else {
+    g_http_server->begin();
+    Serial.println(F("WebSocket disponível em ws://<ip>/ws (porta 80)"));
+  }
 }
 
 void net_ws_loop() {

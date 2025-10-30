@@ -12,13 +12,15 @@ let faces = [];
 const DEFAULT_ESP32_IP = "192.168.0.123"; // ajuste conforme o IP do seu ESP32
 const urlParams = new URLSearchParams(typeof window !== 'undefined' ? window.location.search : "");
 const esp32Param = urlParams.get('esp32');
-let wsUrl = `ws://${DEFAULT_ESP32_IP}/ws`;
+const isHttpsPage = (typeof window !== 'undefined') && window.location.protocol === 'https:';
+const defaultScheme = isHttpsPage ? 'wss' : 'ws';
+let wsUrl = `${defaultScheme}://${DEFAULT_ESP32_IP}/ws`;
 if (esp32Param) {
   if (esp32Param.startsWith('ws://') || esp32Param.startsWith('wss://')) {
     wsUrl = esp32Param;
   } else {
     const clean = esp32Param.replace(/\/$/, '');
-    wsUrl = `ws://${clean}${clean.endsWith('/ws') ? '' : '/ws'}`;
+    wsUrl = `${defaultScheme}://${clean}${clean.endsWith('/ws') ? '' : '/ws'}`;
   }
 }
 
@@ -79,6 +81,9 @@ function onWsClose(evt) {
 
 function onWsError(evt) {
   console.error('Erro no WebSocket:', evt);
+  if (wsUrl.startsWith('wss://')) {
+    console.error('Certifique-se de que o certificado TLS do ESP32 esteja confiado pelo navegador.');
+  }
   wsState = 'erro';
   wsNextReconnectAt = millis() + WS_RECONNECT_INTERVAL_MS;
 }
