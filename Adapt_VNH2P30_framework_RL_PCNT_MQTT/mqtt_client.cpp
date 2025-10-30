@@ -11,8 +11,8 @@
 // =======================
 // Defaults (pode editar aqui)
 // =======================
-static const char* DEF_WIFI_SSID     = "Rinobont Brasil Não 5GHz";
-static const char* DEF_WIFI_PASS     = "autonomos";
+static const char* DEF_WIFI_SSID     = "Projeto Adapt";
+static const char* DEF_WIFI_PASS     = "adaptufjf";
 
 static const char* DEF_MQTT_HOST     = "0e51aa7bffcf45618c342e30a71338e8.s1.eu.hivemq.cloud";
 static int         DEF_MQTT_PORT     = 8883;  // TLS
