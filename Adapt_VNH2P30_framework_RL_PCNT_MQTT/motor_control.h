@@ -33,6 +33,14 @@
 
 #define PULSOS_POR_VOLTA 11
 
+enum MotionCommand {
+  MOTION_STOP = 0,
+  MOTION_FORWARD,
+  MOTION_REVERSE,
+  MOTION_TURN_LEFT,
+  MOTION_TURN_RIGHT,
+};
+
 void setupPCNT();
 
 void setupMotor();
@@ -43,6 +51,10 @@ void Reverse();
 void TurnLeft();
 void TurnRight();
 void Lock();
+
+void set_remote_motion_command(MotionCommand command);
+MotionCommand get_remote_motion_command();
+void apply_motion_command(MotionCommand command);
 
 void motorGo(uint8_t motor, uint8_t direct, uint8_t pwm);
 

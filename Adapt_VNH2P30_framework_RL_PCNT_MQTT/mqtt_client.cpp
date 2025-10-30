@@ -322,24 +322,24 @@ static bool execute_yaw_command(float yawDeg, String& executedCommand) {
   const float yawDeadband = 8.0f;
 
   if (isnan(yawDeg)) {
-    Stop();
+    set_remote_motion_command(MOTION_STOP);
     executedCommand = F("stop");
     Serial.println(F("[MQTT] Yaw inválido -> Stop"));
     return true;
   }
 
   if (yawDeg <= -yawDeadband) {
-    TurnLeft();
+    set_remote_motion_command(MOTION_TURN_LEFT);
     executedCommand = F("left");
     return true;
   }
   if (yawDeg >= yawDeadband) {
-    TurnRight();
+    set_remote_motion_command(MOTION_TURN_RIGHT);
     executedCommand = F("right");
     return true;
   }
 
-  Stop();
+  set_remote_motion_command(MOTION_STOP);
   executedCommand = F("stop");
   return true;
 }
