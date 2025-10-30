@@ -18,7 +18,7 @@ static const char* DEF_MQTT_HOST     = "0e51aa7bffcf45618c342e30a71338e8.s1.eu.h
 static int         DEF_MQTT_PORT     = 8883;  // TLS
 static const char* DEF_MQTT_USER     = "hivemq.webclient.1761227941253";
 static const char* DEF_MQTT_PASS     = "&a9<Vzb3sC0A!6ZB>xTm";
-static bool        DEF_INSECURE_TLS  = true;  // true = setInsecure() (teste rápido)
+static bool        DEF_INSECURE_TLS  = true;  // true = conexão sem validação de certificado (teste rápido)
 
 // Tópico de subscribe
 static const char* DEF_SUB_TOPIC     = "facemesh/cmd";
@@ -72,6 +72,36 @@ static void publish_pong(const String& nonce,
                          float yawDeg,
                          const String& executedCommand,
                          bool success);
+static bool enable_insecure_tls(WiFiClientSecure& client);
+static void log_insecure_choice(bool used_set_insecure);
+
+namespace {
+template <typename Client>
+auto try_set_insecure(Client& client, int)
+    -> decltype(client.setInsecure(), bool()) {
+  client.setInsecure();
+  return true;
+}
+
+template <typename Client>
+bool try_set_insecure(Client& client, ...) {
+  client.setCACert(nullptr);
+  return false;
+}
+}  // namespace
+
+static bool enable_insecure_tls(WiFiClientSecure& client) {
+  return try_set_insecure(client, 0);
+}
+
+static void log_insecure_choice(bool used_set_insecure) {
+  if (used_set_insecure) {
+    Serial.println(F("[TLS] setInsecure() habilitado (teste)."));
+  } else {
+    Serial.println(
+        F("[TLS] setCACert(nullptr) aplicado (setInsecure indisponível nesta versão do core)."));
+  }
+}
 
 // =======================
 // Implementação dos setters
@@ -178,14 +208,13 @@ void net_mqtt_begin() {
 
   // TLS: inseguro para testes OU valida root CA
   if (g_insecureTLS) {
-    g_secure_client.setInsecure();
-    Serial.println(F("[TLS] setInsecure() habilitado (teste)."));
+    log_insecure_choice(enable_insecure_tls(g_secure_client));
   } else if (g_root_ca_pem && *g_root_ca_pem) {
     g_secure_client.setCACert(g_root_ca_pem);
     Serial.println(F("[TLS] Root CA configurado (validação ativa)."));
   } else {
-    Serial.println(F("[TLS] Aviso: validação pedida sem Root CA — caindo para setInsecure()."));
-    g_secure_client.setInsecure();
+    Serial.println(F("[TLS] Aviso: validação pedida sem Root CA — caindo para modo sem validação."));
+    log_insecure_choice(enable_insecure_tls(g_secure_client));
   }
 
   g_mqtt_client.setServer(g_mqtt_host, g_mqtt_port);
