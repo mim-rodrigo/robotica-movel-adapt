@@ -5,7 +5,8 @@ Este firmware controla dois motores via VNH2P30 e recebe comandos de direção p
 ## Comunicação de rede
 - Modo STA na mesma rede Wi-Fi configurada nas constantes `DEF_WIFI_SSID` e `DEF_WIFI_PASS` em `websocket_server.cpp`.
 - Servidor WebSocket seguro (`wss://`) na porta 443 por padrão, endpoint `/ws`.
-- Caso o certificado TLS não esteja configurado, o firmware faz fallback para `ws://` na porta 80.
+- Caso o certificado TLS não esteja configurado **ou** a biblioteca `ESPAsyncWebServer` instalada não ofereça `beginSecure()`,
+  o firmware faz fallback automático para `ws://` na porta 80.
 - Mensagens recebidas: `yaw|nonce|timestamp` (graus).
 - Resposta enviada: `nonce|timestamp|execMillis|yaw|acao|status`.
 
@@ -29,4 +30,5 @@ A lógica de decisão converte o yaw recebido em comandos `stop`, `left` ou `rig
   ```
 - Copie o conteúdo PEM para substituir `DEFAULT_TLS_CERT` e `DEFAULT_TLS_KEY` **ou** carregue-os em runtime chamando `net_set_tls_credentials(cert, key)` antes de `net_ws_begin()`.
 - Certifique-se de confiar no certificado no sistema operacional/navegador para permitir a conexão `wss://` sem erros.
-- Se preferir desativar TLS (uso interno), chame `net_enable_tls(false)` antes de `net_ws_begin()`; o endpoint ficará disponível em `ws://<IP>:80/ws`.
+- Se preferir desativar TLS (uso interno) ou estiver usando uma versão da biblioteca sem suporte a `beginSecure()`, chame
+  `net_enable_tls(false)` antes de `net_ws_begin()`; o endpoint ficará disponível em `ws://<IP>:80/ws`.

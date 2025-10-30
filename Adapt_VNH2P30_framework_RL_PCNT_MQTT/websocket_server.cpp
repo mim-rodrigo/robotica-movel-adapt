@@ -3,8 +3,10 @@
 #include <WiFi.h>
 #include <AsyncTCP.h>
 #include <ESPAsyncWebServer.h>
-#include <math.h>
 #include <ctype.h>
+#include <math.h>
+#include <type_traits>
+#include <utility>
 
 #include "motor_control.h"
 
@@ -88,6 +90,24 @@ static const char* g_tls_cert_override = nullptr;
 static const char* g_tls_key_override = nullptr;
 static String g_tls_cert_buffer;
 static String g_tls_key_buffer;
+
+namespace {
+template <typename T>
+class has_begin_secure {
+ private:
+  template <typename U>
+  static auto test(int)
+      -> decltype(std::declval<U&>().beginSecure("", "", ""), std::true_type{});
+
+  template <typename>
+  static std::false_type test(...);
+
+ public:
+  static constexpr bool value = decltype(test<T>(0))::value;
+};
+}  // namespace
+
+static constexpr bool SERVER_HAS_BEGIN_SECURE = has_begin_secure<AsyncWebServer>::value;
 
 // =======================
 // Prototypes internos
@@ -209,6 +229,11 @@ void net_ws_begin() {
 
   if (tls_ready && !tls_supported) {
     Serial.println(F("[TLS] A biblioteca AsyncTCP foi compilada sem suporte a SSL. Voltando para WS sem criptografia."));
+    tls_ready = false;
+  }
+
+  if (tls_ready && !SERVER_HAS_BEGIN_SECURE) {
+    Serial.println(F("[TLS] A versão instalada do ESPAsyncWebServer não oferece beginSecure(). Voltando para WS sem criptografia."));
     tls_ready = false;
   }
 
