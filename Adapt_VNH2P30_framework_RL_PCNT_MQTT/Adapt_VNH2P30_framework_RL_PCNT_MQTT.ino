@@ -1,5 +1,5 @@
 #include "motor_control.h"
-#include "mqtt_client.h"
+#include "websocket_server.h"
 
 int botao_frente = 36;
 int botao_re = 34;
@@ -28,7 +28,7 @@ void leituraBotoes() {
 void setup() {
 
   Serial.begin(115200);
-  net_mqtt_begin();     // inicializa WiFi + MQTT
+  net_ws_begin();       // inicializa WiFi + WebSocket
   
   setupMotor();
 
@@ -40,7 +40,7 @@ void setup() {
 
 void loop() {
 
-  net_mqtt_loop();      // mantém a conexão e processa mensagens
+  net_ws_loop();        // mantém a conexão e processa mensagens
   
   encoder(); // leitura dos encoders
 
