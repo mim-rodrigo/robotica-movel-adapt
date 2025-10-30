@@ -8,20 +8,87 @@ let options = { maxFaces: 1, refineLandmarks: false, flipped: false }; // NÃO i
 let video;
 let faces = [];
 
-// ---------- MQTT ----------
-const mqttUrl      = "wss://0e51aa7bffcf45618c342e30a71338e8.s1.eu.hivemq.cloud:8884/mqtt";
-const mqttTopic    = "facemesh/angle"; // publica YAW calibrado (graus)
-const commandTopic = "facemesh/cmd";   // yaw para o robô + medição RTT
-const pongTopic    = "facemesh/pong";  // respostas do ESP32 com nonce/timestamp
+// ---------- WebSocket ----------
+const DEFAULT_ESP32_IP = "192.168.0.123"; // ajuste conforme o IP do seu ESP32
+const urlParams = new URLSearchParams(typeof window !== 'undefined' ? window.location.search : "");
+const esp32Param = urlParams.get('esp32');
+let wsUrl = `ws://${DEFAULT_ESP32_IP}/ws`;
+if (esp32Param) {
+  if (esp32Param.startsWith('ws://') || esp32Param.startsWith('wss://')) {
+    wsUrl = esp32Param;
+  } else {
+    const clean = esp32Param.replace(/\/$/, '');
+    wsUrl = `ws://${clean}${clean.endsWith('/ws') ? '' : '/ws'}`;
+  }
+}
 
-const connectOptions = {
-  username: "hivemq.webclient.1761227941253",
-  password: "&a9<Vzb3sC0A!6ZB>xTm",
-  clientId: "p5js_client_" + parseInt(Math.random() * 1000)
-};
+let socket = null;
+let wsState = 'desconectado';
+let wsNextReconnectAt = 0;
+let faceMeshStarted = false;
+const WS_RECONNECT_INTERVAL_MS = 3000;
 
-let client;
-let mqttInitialized = false;
+function wsIsOpen() {
+  return socket && socket.readyState === WebSocket.OPEN;
+}
+
+function maintainWebSocket() {
+  if (wsIsOpen() || (socket && socket.readyState === WebSocket.CONNECTING)) {
+    return;
+  }
+
+  const now = millis();
+  if (now < wsNextReconnectAt) return;
+
+  wsNextReconnectAt = now + WS_RECONNECT_INTERVAL_MS;
+  wsState = 'conectando';
+
+  try {
+    console.log(`Conectando WebSocket em ${wsUrl}...`);
+    socket = new WebSocket(wsUrl);
+  } catch (err) {
+    console.error('Falha ao criar WebSocket:', err);
+    socket = null;
+    wsState = 'erro';
+    return;
+  }
+
+  socket.addEventListener('open', onWsOpen);
+  socket.addEventListener('close', onWsClose);
+  socket.addEventListener('error', onWsError);
+  socket.addEventListener('message', onWsMessage);
+}
+
+function onWsOpen() {
+  wsState = 'conectado';
+  wsNextReconnectAt = millis();
+  console.log('WebSocket conectado!', wsUrl);
+
+  if (!faceMeshStarted) {
+    faceMesh.detectStart(video, gotFaces);
+    faceMeshStarted = true;
+  }
+}
+
+function onWsClose(evt) {
+  console.warn('WebSocket fechado:', evt?.code, evt?.reason);
+  wsState = 'desconectado';
+  socket = null;
+  wsNextReconnectAt = millis() + WS_RECONNECT_INTERVAL_MS;
+}
+
+function onWsError(evt) {
+  console.error('Erro no WebSocket:', evt);
+  wsState = 'erro';
+  wsNextReconnectAt = millis() + WS_RECONNECT_INTERVAL_MS;
+}
+
+function onWsMessage(evt) {
+  const raw = typeof evt.data === 'string' ? evt.data : '';
+  if (raw) {
+    handlePongMessage(raw);
+  }
+}
 
 // ---------- Medição de latência (RTT) ----------
 const perf = (typeof performance !== 'undefined') ? performance : { now: () => Date.now() };
@@ -81,6 +148,9 @@ function setup() {
 
   // meta de FPS
   setFrameRate(60);
+
+  wsNextReconnectAt = 0;
+  maintainWebSocket();
 }
 
 function windowResized() {
@@ -129,6 +199,7 @@ function gotFaces(results) {
 function draw() {
   background(0);
 
+  maintainWebSocket();
   reapExpiredCommands();
 
   // -------- desenha o VÍDEO (robusto + ESPELHADO) --------
@@ -155,43 +226,12 @@ function draw() {
     pop();
   }
 
-  // -------- inicializa MQTT uma vez --------
-  if (!mqttInitialized) {
-    if (typeof mqtt !== 'undefined') {
-      mqttInitialized = true;
-      client = mqtt.connect(mqttUrl, connectOptions);
-
-      client.on("connect", function() {
-        console.log("MQTT Conectado!");
-        client.subscribe(pongTopic, function(err) {
-          if (err) {
-            console.warn("Falha ao inscrever em", pongTopic, err);
-          } else {
-            console.log("Inscrito em", pongTopic);
-          }
-        });
-        // inicia FaceMesh só após MQTT on-line (opcional; mantém sequenciamento)
-        faceMesh.detectStart(video, gotFaces);
-      });
-      client.on("error", function(err) {
-        console.warn("Falha ao conectar MQTT:", err);
-        mqttInitialized = false; // para tentar de novo
-      });
-      client.on("reconnect", function() {
-        console.log("MQTT Reconectando...");
-      });
-      client.on("message", function(topic, message) {
-        if (topic === pongTopic) {
-          handlePongMessage(message.toString());
-        }
-      });
-    } else {
-      fill(255, 0, 0);
-      textAlign(CENTER);
-      textSize(20);
-      text("Aguardando biblioteca MQTT...", width / 2, height / 2);
-    }
-    // segue para HUD mesmo assim
+  if (!wsIsOpen()) {
+    fill(255, 0, 0);
+    textAlign(CENTER);
+    textSize(18);
+    text(`WebSocket ${wsState}…`, width / 2, 32);
+    textAlign(LEFT, BASELINE);
   }
 
   // alvo no centro do CANVAS (referência visual)
@@ -252,15 +292,9 @@ function draw() {
       const pitchCal = pitchDeg - pitchOffset;
       const rollCal  = rollDeg  - rollOffset;
 
-      // publica YAW calibrado
-      if (client && client.connected) {
-        const payload = yawCal.toFixed(1);
-        client.publish(mqttTopic, payload);
-
-        if (!this._lastLog || millis() - this._lastLog > 250) {
-          console.log(`MQTT [${mqttTopic}] yaw_cal=${payload}° (pitch_cal=${pitchCal.toFixed(1)}°, roll_cal=${rollCal.toFixed(1)}°)`);
-          this._lastLog = millis();
-        }
+      if (!this._lastLog || millis() - this._lastLog > 250) {
+        console.log(`[WS] yaw_cal=${yawCal.toFixed(1)}° (pitch_cal=${pitchCal.toFixed(1)}°, roll_cal=${rollCal.toFixed(1)}°)`);
+        this._lastLog = millis();
       }
 
       maybeSendYawCommand(yawCal);
@@ -329,7 +363,7 @@ function draw() {
 
 // ---------- Envio de yaw + RTT ----------
 function maybeSendYawCommand(yawCal) {
-  if (!client || !client.connected) return;
+  if (!wsIsOpen()) return;
 
   const now = millis();
   const changed = (lastYawSent === null) || Math.abs(yawCal - lastYawSent) >= YAW_EPSILON_DEG;
@@ -340,14 +374,22 @@ function maybeSendYawCommand(yawCal) {
 }
 
 function sendYawCommand(yawDeg) {
-  if (!client || !client.connected) return;
+  if (!wsIsOpen()) return;
 
   const nonce = generateNonce();
   const t0 = Date.now();
   const yawStr = yawDeg.toFixed(1);
   const payload = `${yawStr}|${nonce}|${t0}`;
 
-  client.publish(commandTopic, payload);
+  try {
+    socket.send(payload);
+  } catch (err) {
+    console.error('Falha ao enviar comando WS:', err);
+    wsState = 'erro';
+    socket = null;
+    wsNextReconnectAt = millis() + WS_RECONNECT_INTERVAL_MS;
+    return;
+  }
   pendingCommands.set(nonce, {
     yaw: yawDeg,
     t0,
@@ -360,7 +402,7 @@ function sendYawCommand(yawDeg) {
   latencyStats.lastAction = 'aguardando';
   latencyStats.lastStatus = 'pendente';
 
-  console.log(`MQTT [${commandTopic}] yaw=${yawStr} nonce=${nonce} t0=${t0}`);
+  console.log(`[WS->ESP32] yaw=${yawStr} nonce=${nonce} t0=${t0}`);
 }
 
 function handlePongMessage(rawMessage) {
@@ -419,7 +461,7 @@ function reapExpiredCommands() {
 
 function drawLatencyHUD() {
   const panelWidth = 320;
-  const panelHeight = 96;
+  const panelHeight = 116;
   const panelX = width - panelWidth - 10;
   const panelY = 46;
 
@@ -443,10 +485,12 @@ function drawLatencyHUD() {
   const actionTxt = latencyStats.lastAction || '—';
   const pendingCount = pendingCommands.size;
 
-  text(`RTT último: ${lastRttTxt}`, panelX + 10, panelY + 24);
-  text(`Mín/Máx/Média: ${minTxt} / ${maxTxt} / ${avgTxt}`, panelX + 10, panelY + 44);
-  text(`Yaw echo: ${yawTxt} • Ação: ${actionTxt} (${statusTxt})`, panelX + 10, panelY + 64);
-  text(`Amostras: ${latencyStats.count} • Pendentes: ${pendingCount}`, panelX + 10, panelY + 84);
+  const urlShort = wsUrl.replace(/^ws:\/\//, '').replace(/\/ws$/, '');
+  text(`WebSocket: ${wsState} @ ${urlShort}`, panelX + 10, panelY + 24);
+  text(`RTT último: ${lastRttTxt}`, panelX + 10, panelY + 44);
+  text(`Mín/Máx/Média: ${minTxt} / ${maxTxt} / ${avgTxt}`, panelX + 10, panelY + 64);
+  text(`Yaw echo: ${yawTxt} • Ação: ${actionTxt} (${statusTxt})`, panelX + 10, panelY + 84);
+  text(`Amostras: ${latencyStats.count} • Pendentes: ${pendingCount}`, panelX + 10, panelY + 104);
 }
 
 function generateNonce() {
