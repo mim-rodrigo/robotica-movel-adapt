@@ -46,24 +46,30 @@ void loop() {
 
   leituraBotoes(); // leitura dos botões
 
-  // Após a sequência, o robô volta a responder aos botões
+  MotionCommand commandToExecute = MOTION_STOP;
+  bool manualControl = true;
+
   switch (estado_botoes) {
-    case 0:
-      Stop();
-      break;
     case 1:
-      Forward();
+      commandToExecute = MOTION_FORWARD;
       break;
     case 2:
-      Reverse();
+      commandToExecute = MOTION_REVERSE;
       break;
     case 3:
-      TurnLeft();
+      commandToExecute = MOTION_TURN_LEFT;
       break;
     case 4:
-      TurnRight();
+      commandToExecute = MOTION_TURN_RIGHT;
       break;
     default:
+      manualControl = false;
       break;
   }
+
+  if (!manualControl) {
+    commandToExecute = get_remote_motion_command();
+  }
+
+  apply_motion_command(commandToExecute);
 }

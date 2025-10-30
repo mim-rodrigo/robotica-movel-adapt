@@ -6,6 +6,9 @@ short usSpeedL = 159; // Velocidade padrão para o Motor L
 unsigned short usMotor_Status = BRAKE;
 unsigned long last_time = 0;
 
+static MotionCommand g_remote_command = MOTION_STOP;
+static MotionCommand g_last_applied_command = MOTION_STOP;
+
 void setupPCNT() {
   pcnt_config_t configR;
   configR.pulse_gpio_num = ENCODER_RA;
@@ -52,6 +55,8 @@ void setupMotor() {
 
   Serial.begin(115200); // Faster baud rate for ESP32
   Serial.println("Begin motor control");
+
+  Stop();
 }
 
 void encoder() {
@@ -102,34 +107,37 @@ void Stop() {
   usMotor_Status = BRAKE;
   motorGo(MOTOR_R, usMotor_Status, 0);
   motorGo(MOTOR_L, usMotor_Status, 0);
+  g_last_applied_command = MOTION_STOP;
 }
 
 void Forward() {
- if(!block_foward)
- {
-   usMotor_Status = CW;
+  if (!block_foward) {
+    usMotor_Status = CW;
     motorGo(MOTOR_R, usMotor_Status, usSpeedR); // Usa usSpeedR
     motorGo(MOTOR_L, usMotor_Status, usSpeedL); // Usa usSpeedL
- }
+    g_last_applied_command = MOTION_FORWARD;
+  }
 }
 
 void Reverse() {
-  if(!block_reverse)
-  {
+  if (!block_reverse) {
     usMotor_Status = CCW;
     motorGo(MOTOR_R, usMotor_Status, usSpeedR); // Usa usSpeedR
     motorGo(MOTOR_L, usMotor_Status, usSpeedL); // Usa usSpeedL
+    g_last_applied_command = MOTION_REVERSE;
   }
 }
 
 void TurnLeft() {
   motorGo(MOTOR_R, CW, usSpeedR);  // Usa usSpeedR
   motorGo(MOTOR_L, CCW, usSpeedL); // Usa usSpeedL
+  g_last_applied_command = MOTION_TURN_LEFT;
 }
 
 void TurnRight() {
   motorGo(MOTOR_R, CCW, usSpeedR); // Usa usSpeedR
   motorGo(MOTOR_L, CW, usSpeedL);  // Usa usSpeedL
+  g_last_applied_command = MOTION_TURN_RIGHT;
 }
 
 void Lock() {
@@ -139,6 +147,7 @@ void Lock() {
   digitalWrite(EN_PIN_R, LOW);
   digitalWrite(EN_PIN_L, LOW);
   Serial.println("Motors locked");
+  g_last_applied_command = MOTION_STOP;
 }
 
 void motorGo(uint8_t motor, uint8_t direct, uint8_t pwm) {
@@ -168,4 +177,41 @@ void motorGo(uint8_t motor, uint8_t direct, uint8_t pwm) {
     }
     ledcWrite(1, pwm);
   }
+}
+
+void set_remote_motion_command(MotionCommand command) {
+  g_remote_command = command;
+}
+
+MotionCommand get_remote_motion_command() {
+  return g_remote_command;
+}
+
+static void apply_motion_now(MotionCommand command) {
+  switch (command) {
+    case MOTION_STOP:
+      Stop();
+      break;
+    case MOTION_FORWARD:
+      Forward();
+      break;
+    case MOTION_REVERSE:
+      Reverse();
+      break;
+    case MOTION_TURN_LEFT:
+      TurnLeft();
+      break;
+    case MOTION_TURN_RIGHT:
+      TurnRight();
+      break;
+  }
+}
+
+void apply_motion_command(MotionCommand command) {
+  if (command == g_last_applied_command) {
+    return;
+  }
+
+  apply_motion_now(command);
+  g_last_applied_command = command;
 }
