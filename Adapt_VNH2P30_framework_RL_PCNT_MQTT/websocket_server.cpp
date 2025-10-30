@@ -5,8 +5,6 @@
 #include <ESPAsyncWebServer.h>
 #include <ctype.h>
 #include <math.h>
-#include <type_traits>
-#include <utility>
 
 #include "motor_control.h"
 
@@ -93,21 +91,17 @@ static String g_tls_key_buffer;
 
 namespace {
 template <typename T>
-class has_begin_secure {
- private:
-  template <typename U>
-  static auto test(int)
-      -> decltype(std::declval<U&>().beginSecure("", "", ""), std::true_type{});
+auto try_begin_secure(T* server, const char* cert, const char* key)
+    -> decltype(server->beginSecure(cert, key, static_cast<const char*>(nullptr)), bool()) {
+  server->beginSecure(cert, key, nullptr);
+  return true;
+}
 
-  template <typename>
-  static std::false_type test(...);
-
- public:
-  static constexpr bool value = decltype(test<T>(0))::value;
-};
+template <typename T>
+bool try_begin_secure(T*, const char*, const char*) {
+  return false;
+}
 }  // namespace
-
-static constexpr bool SERVER_HAS_BEGIN_SECURE = has_begin_secure<AsyncWebServer>::value;
 
 // =======================
 // Prototypes internos
@@ -232,21 +226,27 @@ void net_ws_begin() {
     tls_ready = false;
   }
 
-  if (tls_ready && !SERVER_HAS_BEGIN_SECURE) {
-    Serial.println(F("[TLS] A versão instalada do ESPAsyncWebServer não oferece beginSecure(). Voltando para WS sem criptografia."));
-    tls_ready = false;
-  }
-
   const uint16_t port = tls_ready ? 443 : 80;
   g_http_server = new AsyncWebServer(port);
 
   g_ws.onEvent(handle_ws_event);
   g_http_server->addHandler(&g_ws);
 
+  bool started_tls = false;
   if (tls_ready) {
-    g_http_server->beginSecure(g_tls_cert_buffer.c_str(), g_tls_key_buffer.c_str(), nullptr);
+    started_tls = try_begin_secure(g_http_server, g_tls_cert_buffer.c_str(), g_tls_key_buffer.c_str());
+    if (!started_tls) {
+      Serial.println(F("[TLS] A versão instalada do ESPAsyncWebServer não oferece beginSecure(). Voltando para WS sem criptografia."));
+      tls_ready = false;
+    }
+  }
+
+  if (tls_ready && started_tls) {
     Serial.println(F("WebSocket disponível em wss://<ip>/ws (porta 443)"));
   } else {
+    if (tls_ready && !started_tls) {
+      Serial.println(F("[TLS] Servidor iniciado sem criptografia por falta de suporte a TLS."));
+    }
     g_http_server->begin();
     Serial.println(F("WebSocket disponível em ws://<ip>/ws (porta 80)"));
   }
