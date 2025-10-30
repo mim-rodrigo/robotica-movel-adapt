@@ -3,6 +3,10 @@
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
 #include <PubSubClient.h>
+#include <math.h>
+#include <ctype.h>
+
+#include "motor_control.h"
 
 // =======================
 // Defaults (pode editar aqui)
@@ -14,10 +18,11 @@ static const char* DEF_MQTT_HOST     = "0e51aa7bffcf45618c342e30a71338e8.s1.eu.h
 static int         DEF_MQTT_PORT     = 8883;  // TLS
 static const char* DEF_MQTT_USER     = "hivemq.webclient.1761227941253";
 static const char* DEF_MQTT_PASS     = "&a9<Vzb3sC0A!6ZB>xTm";
-static bool        DEF_INSECURE_TLS  = true;  // true = setInsecure() (teste rápido)
+static bool        DEF_INSECURE_TLS  = true;  // true = conexão sem validação de certificado (teste rápido)
 
 // Tópico de subscribe
-static const char* DEF_SUB_TOPIC     = "facemesh/offset";
+static const char* DEF_SUB_TOPIC     = "facemesh/cmd";
+static const char* DEF_PUB_TOPIC     = "facemesh/pong";
 
 // Root CA (opcional). Exemplo:
 // static const char* DEF_ROOT_CA_PEM = R"EOF(
@@ -40,6 +45,7 @@ static const char* g_mqtt_pass   = DEF_MQTT_PASS;
 static bool        g_insecureTLS = DEF_INSECURE_TLS;
 
 static const char* g_sub_topic   = DEF_SUB_TOPIC;
+static const char* g_pub_topic   = DEF_PUB_TOPIC;
 static const char* g_root_ca_pem = DEF_ROOT_CA_PEM;
 
 // =======================
@@ -54,6 +60,48 @@ static PubSubClient     g_mqtt_client(g_secure_client);
 static void setup_wifi();
 static void mqtt_callback(char* topic, uint8_t* payload, unsigned int length);
 static void mqtt_reconnect();
+static void handle_command_message(const String& payload);
+static bool parse_command_payload(const String& payload,
+                                  float& yawDeg,
+                                  String& nonce,
+                                  String& timestamp);
+static bool execute_yaw_command(float yawDeg, String& executedCommand);
+static void publish_pong(const String& nonce,
+                         const String& timestamp,
+                         unsigned long executed_at,
+                         float yawDeg,
+                         const String& executedCommand,
+                         bool success);
+static bool enable_insecure_tls(WiFiClientSecure& client);
+static void log_insecure_choice(bool used_set_insecure);
+
+namespace {
+template <typename Client>
+auto try_set_insecure(Client& client, int)
+    -> decltype(client.setInsecure(), bool()) {
+  client.setInsecure();
+  return true;
+}
+
+template <typename Client>
+bool try_set_insecure(Client& client, ...) {
+  client.setCACert(nullptr);
+  return false;
+}
+}  // namespace
+
+static bool enable_insecure_tls(WiFiClientSecure& client) {
+  return try_set_insecure(client, 0);
+}
+
+static void log_insecure_choice(bool used_set_insecure) {
+  if (used_set_insecure) {
+    Serial.println(F("[TLS] setInsecure() habilitado (teste)."));
+  } else {
+    Serial.println(
+        F("[TLS] setCACert(nullptr) aplicado (setInsecure indisponível nesta versão do core)."));
+  }
+}
 
 // =======================
 // Implementação dos setters
@@ -75,6 +123,10 @@ void net_set_broker(const char* host, int port,
 
 void net_set_topic(const char* topic) {
   g_sub_topic = topic;
+}
+
+void net_set_pub_topic(const char* topic) {
+  g_pub_topic = topic;
 }
 
 void net_set_root_ca(const char* root_ca_pem) {
@@ -120,11 +172,11 @@ static void mqtt_callback(char* topic, uint8_t* payload, unsigned int length) {
     msg += static_cast<char>(payload[i]);
   }
 
-  Serial.print(F("Valor (dx): "));
+  Serial.print(F("Payload: "));
   Serial.println(msg);
   Serial.println(F("-----------------------"));
 
-  // TODO: integrar aqui: controle de servo/motores conforme 'msg'
+  handle_command_message(msg);
 }
 
 static void mqtt_reconnect() {
@@ -156,14 +208,13 @@ void net_mqtt_begin() {
 
   // TLS: inseguro para testes OU valida root CA
   if (g_insecureTLS) {
-    g_secure_client.setInsecure();
-    Serial.println(F("[TLS] setInsecure() habilitado (teste)."));
+    log_insecure_choice(enable_insecure_tls(g_secure_client));
   } else if (g_root_ca_pem && *g_root_ca_pem) {
     g_secure_client.setCACert(g_root_ca_pem);
     Serial.println(F("[TLS] Root CA configurado (validação ativa)."));
   } else {
-    Serial.println(F("[TLS] Aviso: validação pedida sem Root CA — caindo para setInsecure()."));
-    g_secure_client.setInsecure();
+    Serial.println(F("[TLS] Aviso: validação pedida sem Root CA — caindo para modo sem validação."));
+    log_insecure_choice(enable_insecure_tls(g_secure_client));
   }
 
   g_mqtt_client.setServer(g_mqtt_host, g_mqtt_port);
@@ -182,4 +233,152 @@ void net_mqtt_loop() {
 bool net_mqtt_publish(const char* topic, const char* payload) {
   if (!g_mqtt_client.connected()) return false;
   return g_mqtt_client.publish(topic, payload);
+}
+
+static void handle_command_message(const String& payload) {
+  float yawDeg = 0.0f;
+  String nonce;
+  String timestamp;
+  if (!parse_command_payload(payload, yawDeg, nonce, timestamp)) {
+    Serial.println(F("[MQTT] Payload inválido (esperado: yaw|nonce|timestamp)."));
+    return;
+  }
+
+  Serial.print(F("[MQTT] Yaw recebido: "));
+  Serial.print(yawDeg, 2);
+  Serial.print(F("° | nonce="));
+  Serial.print(nonce);
+  Serial.print(F(" | t0="));
+  Serial.println(timestamp);
+
+  String executedCommand;
+  bool success = execute_yaw_command(yawDeg, executedCommand);
+  if (!success && executedCommand.length() == 0) {
+    executedCommand = F("noop");
+  }
+  Serial.print(F("[MQTT] Ação derivada: "));
+  Serial.print(executedCommand);
+  Serial.print(F(" | sucesso="));
+  Serial.println(success ? F("sim") : F("não"));
+  unsigned long executed_at = millis();
+  publish_pong(nonce, timestamp, executed_at, yawDeg, executedCommand, success);
+}
+
+static bool parse_command_payload(const String& payload,
+                                  float& yawDeg,
+                                  String& nonce,
+                                  String& timestamp) {
+  int first_sep = payload.indexOf('|');
+  if (first_sep < 0) return false;
+
+  int second_sep = payload.indexOf('|', first_sep + 1);
+  if (second_sep < 0) return false;
+
+  String yawStr = payload.substring(0, first_sep);
+  yawStr.trim();
+
+  nonce = payload.substring(first_sep + 1, second_sep);
+  nonce.trim();
+
+  timestamp = payload.substring(second_sep + 1);
+  timestamp.trim();
+
+  if (yawStr.length() == 0 || nonce.length() == 0 || timestamp.length() == 0) {
+    return false;
+  }
+
+  String yawLower = yawStr;
+  yawLower.toLowerCase();
+  if (yawLower == F("nan")) {
+    yawDeg = NAN;
+    return true;
+  }
+
+  bool hasDigit = false;
+  for (size_t i = 0; i < static_cast<size_t>(yawStr.length()); ++i) {
+    char c = yawStr.charAt(i);
+    if (isdigit(static_cast<unsigned char>(c))) {
+      hasDigit = true;
+      break;
+    }
+    if (c != '-' && c != '+' && c != '.') {
+      return false;
+    }
+  }
+
+  if (!hasDigit) {
+    return false;
+  }
+
+  yawDeg = yawStr.toFloat();
+  if (isnan(yawDeg) || isinf(yawDeg)) {
+    return false;
+  }
+
+  return true;
+}
+
+static bool execute_yaw_command(float yawDeg, String& executedCommand) {
+  const float yawDeadband = 8.0f;
+
+  if (isnan(yawDeg)) {
+    Stop();
+    executedCommand = F("stop");
+    Serial.println(F("[MQTT] Yaw inválido -> Stop"));
+    return true;
+  }
+
+  if (yawDeg <= -yawDeadband) {
+    TurnLeft();
+    executedCommand = F("left");
+    return true;
+  }
+  if (yawDeg >= yawDeadband) {
+    TurnRight();
+    executedCommand = F("right");
+    return true;
+  }
+
+  Stop();
+  executedCommand = F("stop");
+  return true;
+}
+
+static void publish_pong(const String& nonce,
+                         const String& timestamp,
+                         unsigned long executed_at,
+                         float yawDeg,
+                         const String& executedCommand,
+                         bool success) {
+  if (!g_pub_topic || !*g_pub_topic) {
+    Serial.println(F("[MQTT] Tópico de pong não configurado."));
+    return;
+  }
+
+  String payload = nonce;
+  payload += '|';
+  payload += timestamp;
+  payload += '|';
+  payload += String(executed_at);
+  payload += '|';
+  payload += String(yawDeg, 2);
+  payload += '|';
+  payload += executedCommand;
+  payload += '|';
+  payload += (success ? F("ok") : F("error"));
+
+  if (!g_mqtt_client.connected()) {
+    Serial.println(F("[MQTT] Não conectado – não é possível enviar pong."));
+    return;
+  }
+
+  bool published = g_mqtt_client.publish(g_pub_topic, payload.c_str());
+  if (published) {
+    Serial.print(F("[MQTT] Pong publicado em "));
+    Serial.print(g_pub_topic);
+    Serial.print(F(" | payload="));
+    Serial.println(payload);
+  } else {
+    Serial.println(F("[MQTT] Falha ao publicar pong."));
+  }
 }
