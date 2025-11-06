@@ -319,7 +319,8 @@ static bool parse_command_payload(const String& payload,
 }
 
 static bool execute_yaw_command(float yawDeg, String& executedCommand) {
-  const float yawDeadband = 8.0f;
+  static const float yawDeadbandLeft = 8.0f;
+  static const float yawDeadbandRight = 8.0f;
 
   if (isnan(yawDeg)) {
     set_remote_motion_command(MOTION_STOP);
@@ -328,12 +329,12 @@ static bool execute_yaw_command(float yawDeg, String& executedCommand) {
     return true;
   }
 
-  if (yawDeg <= -yawDeadband) {
+  if (yawDeg <= -yawDeadbandLeft) {
     set_remote_motion_command(MOTION_TURN_LEFT);
     executedCommand = F("left");
     return true;
   }
-  if (yawDeg >= yawDeadband) {
+  if (yawDeg >= yawDeadbandRight) {
     set_remote_motion_command(MOTION_TURN_RIGHT);
     executedCommand = F("right");
     return true;
