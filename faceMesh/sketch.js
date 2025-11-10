@@ -20,6 +20,17 @@ const connectOptions = {
   clientId: "p5js_client_" + parseInt(Math.random() * 1000)
 };
 
+const yawDeadbandLeftDeg  = 8.0;
+const yawDeadbandRightDeg = 8.0;
+
+const ANGLE_EMA_ALPHA = 0.2; // suavização das leituras finais (0<alpha<=1)
+
+const filteredAngles = {
+  yaw: null,
+  pitch: null,
+  roll: null
+};
+
 let client;
 let mqttInitialized = false;
 
@@ -52,6 +63,8 @@ let yawOffset = 0, pitchOffset = 0, rollOffset = 0;
 let lastRaw = null;     // {yaw, pitch, roll} sem calibração
 let lastCalibTS = null; // millis() da última calibração
 let btnCalib;           // p5 DOM button
+let btnToggleStream;    // botão para pausar/retomar envio MQTT
+let streamingEnabled = true;
 
 // ---------- FPS (EMA – suavizado) ----------
 let fpsEMA = null;
@@ -78,6 +91,12 @@ function setup() {
   // botão de tara
   btnCalib = createButton('Zerar ângulos (tara)');
   btnCalib.mousePressed(calibrateAngles);
+  btnCalib.position(20, 20);
+
+  btnToggleStream = createButton('Pausar envio MQTT');
+  btnToggleStream.mousePressed(toggleStreaming);
+  btnToggleStream.position(20, 60);
+  updateStreamButtonLabel();
 
   // meta de FPS
   setFrameRate(60);
@@ -116,9 +135,41 @@ function calibrateAngles() {
     pitchOffset = lastRaw.pitch;
     rollOffset  = lastRaw.roll;
     lastCalibTS = millis();
+    resetAngleFilters();
     console.log(`Calibrado: offsets = yaw ${yawOffset.toFixed(1)}°, pitch ${pitchOffset.toFixed(1)}°, roll ${rollOffset.toFixed(1)}°`);
   } else {
     console.warn('Não foi possível calibrar: nenhum rosto detectado ainda.');
+  }
+}
+
+function updateStreamButtonLabel() {
+  if (!btnToggleStream) return;
+  btnToggleStream.html(streamingEnabled ? 'Pausar envio MQTT' : 'Retomar envio MQTT');
+}
+
+function toggleStreaming() {
+  streamingEnabled = !streamingEnabled;
+  resetAngleFilters();
+  updateStreamButtonLabel();
+
+  if (!streamingEnabled) {
+    console.log('Envio MQTT pausado – enviando comando de parada.');
+    sendYawCommand(NaN, { force: true });
+    pendingCommands.clear();
+    lastYawSent = null;
+    lastYawSentAt = 0;
+    latencyStats.lastYaw = null;
+    latencyStats.lastAction = 'pausado';
+    latencyStats.lastStatus = 'pausado';
+    latencyStats.lastRtt = null;
+  } else {
+    console.log('Envio MQTT retomado.');
+    lastYawSent = null;
+    lastYawSentAt = 0;
+    latencyStats.lastYaw = null;
+    latencyStats.lastAction = '—';
+    latencyStats.lastStatus = 'ativo';
+    latencyStats.lastRtt = null;
   }
 }
 
@@ -252,18 +303,26 @@ function draw() {
       const pitchCal = pitchDeg - pitchOffset;
       const rollCal  = rollDeg  - rollOffset;
 
+      const yawSmooth   = updateAngleFilter('yaw', yawCal);
+      const pitchSmooth = updateAngleFilter('pitch', pitchCal);
+      const rollSmooth  = updateAngleFilter('roll', rollCal);
+
+      const yawOutput   = yawSmooth ?? yawCal;
+      const pitchOutput = pitchSmooth ?? pitchCal;
+      const rollOutput  = rollSmooth ?? rollCal;
+
       // publica YAW calibrado
-      if (client && client.connected) {
-        const payload = yawCal.toFixed(1);
+      if (client && client.connected && streamingEnabled) {
+        const payload = yawOutput.toFixed(1);
         client.publish(mqttTopic, payload);
 
         if (!this._lastLog || millis() - this._lastLog > 250) {
-          console.log(`MQTT [${mqttTopic}] yaw_cal=${payload}° (pitch_cal=${pitchCal.toFixed(1)}°, roll_cal=${rollCal.toFixed(1)}°)`);
+          console.log(`MQTT [${mqttTopic}] yaw_ema=${payload}° (yaw_cal=${yawCal.toFixed(1)}° | pitch_ema=${pitchOutput.toFixed(1)}° | roll_ema=${rollOutput.toFixed(1)}°)`);
           this._lastLog = millis();
         }
       }
 
-      maybeSendYawCommand(yawCal);
+      maybeSendYawCommand(yawOutput);
 
       // ---- Desenho dos keypoints/linhas ESPELHADOS no CANVAS ----
       const mapPtMirror = (p) => ({
@@ -290,14 +349,22 @@ function draw() {
 
       // HUD ângulos (calibrados)
       fill(255); noStroke();
-      rect(6, height - 86, 540, 78, 6);
+      rect(6, height - 126, 560, 118, 6);
       fill(0); textSize(14);
-      text(`Yaw (cal):   ${yawCal.toFixed(1)}°   |   Pitch (cal): ${pitchCal.toFixed(1)}°   |   Roll (cal): ${rollCal.toFixed(1)}°`, 12, height - 62);
+      const line1 = height - 100;
+      const line2 = height - 80;
+      const line3 = height - 60;
+      const line4 = height - 40;
+      text(`Yaw (cal/EMA): ${yawCal.toFixed(1)}° / ${yawOutput.toFixed(1)}°   |   Pitch: ${pitchOutput.toFixed(1)}°   |   Roll: ${rollOutput.toFixed(1)}°`, 12, line1);
+      text(`Deadband Esq: ${yawDeadbandLeftDeg.toFixed(1)}°   |   Deadband Dir: ${yawDeadbandRightDeg.toFixed(1)}°`, 12, line2);
+      const previewAction = determineYawAction(yawOutput);
+      const actionLabel = previewAction === 'left' ? 'Esquerda' : (previewAction === 'right' ? 'Direita' : 'Parar');
+      text(`Streaming MQTT: ${streamingEnabled ? 'Ativo' : 'Pausado'} • Ação prevista: ${actionLabel}`, 12, line3);
       if (lastCalibTS !== null) {
-        text(`Tara ativa • offsets = [${yawOffset.toFixed(1)}°, ${pitchOffset.toFixed(1)}°, ${rollOffset.toFixed(1)}°]`, 12, height - 42);
-        text(`Calibrado há ${( (millis()-lastCalibTS)/1000 ).toFixed(1)} s`, 12, height - 24);
+        const elapsed = ((millis() - lastCalibTS) / 1000).toFixed(1);
+        text(`Tara ativa • offsets = [${yawOffset.toFixed(1)}°, ${pitchOffset.toFixed(1)}°, ${rollOffset.toFixed(1)}°] • Calibrado há ${elapsed} s`, 12, line4);
       } else {
-        text(`Sem tara • clique em "Zerar ângulos (tara)"`, 12, height - 42);
+        text(`Sem tara • clique em "Zerar ângulos (tara)"`, 12, line4);
       }
 
       // linha do centro do CANVAS até o nariz (já no espaço espelhado)
@@ -328,8 +395,15 @@ function draw() {
 }
 
 // ---------- Envio de yaw + RTT ----------
+function determineYawAction(yawDeg) {
+  if (!Number.isFinite(yawDeg)) return 'stop';
+  if (yawDeg <= -yawDeadbandLeftDeg) return 'left';
+  if (yawDeg >= yawDeadbandRightDeg) return 'right';
+  return 'stop';
+}
+
 function maybeSendYawCommand(yawCal) {
-  if (!client || !client.connected) return;
+  if (!client || !client.connected || !streamingEnabled) return;
 
   const now = millis();
   const changed = (lastYawSent === null) || Math.abs(yawCal - lastYawSent) >= YAW_EPSILON_DEG;
@@ -339,26 +413,28 @@ function maybeSendYawCommand(yawCal) {
   sendYawCommand(yawCal);
 }
 
-function sendYawCommand(yawDeg) {
+function sendYawCommand(yawDeg, { force = false } = {}) {
   if (!client || !client.connected) return;
+  if (!force && !streamingEnabled) return;
 
   const nonce = generateNonce();
   const t0 = Date.now();
-  const yawStr = yawDeg.toFixed(1);
+  const yawStr = Number.isFinite(yawDeg) ? yawDeg.toFixed(1) : 'NaN';
   const payload = `${yawStr}|${nonce}|${t0}`;
 
   client.publish(commandTopic, payload);
   pendingCommands.set(nonce, {
-    yaw: yawDeg,
+    yaw: Number.isFinite(yawDeg) ? yawDeg : null,
     t0,
     perfStart: perf.now()
   });
 
-  lastYawSent = yawDeg;
+  lastYawSent = Number.isFinite(yawDeg) ? yawDeg : null;
   lastYawSentAt = millis();
-  latencyStats.lastYaw = yawDeg;
-  latencyStats.lastAction = 'aguardando';
-  latencyStats.lastStatus = 'pendente';
+  const previewAction = determineYawAction(yawDeg);
+  latencyStats.lastYaw = Number.isFinite(yawDeg) ? yawDeg : null;
+  latencyStats.lastAction = previewAction;
+  latencyStats.lastStatus = force ? 'forçado' : 'pendente';
 
   console.log(`MQTT [${commandTopic}] yaw=${yawStr} nonce=${nonce} t0=${t0}`);
 }
@@ -451,6 +527,26 @@ function drawLatencyHUD() {
 
 function generateNonce() {
   return Math.random().toString(36).slice(2, 10) + Math.floor(perf.now()).toString(36);
+}
+
+function resetAngleFilters() {
+  filteredAngles.yaw = null;
+  filteredAngles.pitch = null;
+  filteredAngles.roll = null;
+}
+
+function updateAngleFilter(axis, value) {
+  if (!Number.isFinite(value)) {
+    return filteredAngles[axis];
+  }
+
+  const previous = filteredAngles[axis];
+  const filtered = previous === null
+    ? value
+    : (ANGLE_EMA_ALPHA * value) + ((1 - ANGLE_EMA_ALPHA) * previous);
+
+  filteredAngles[axis] = filtered;
+  return filtered;
 }
 
 // ---------- Helpers geométricos ----------

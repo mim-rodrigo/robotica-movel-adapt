@@ -8,6 +8,8 @@ unsigned long last_time = 0;
 
 static MotionCommand g_remote_command = MOTION_STOP;
 static MotionCommand g_last_applied_command = MOTION_STOP;
+static unsigned long g_remote_command_last_update = 0;
+static const unsigned long REMOTE_COMMAND_TIMEOUT_MS = 1000;  // 1s sem mensagens -> STOP
 
 void setupPCNT() {
   pcnt_config_t configR;
@@ -181,9 +183,23 @@ void motorGo(uint8_t motor, uint8_t direct, uint8_t pwm) {
 
 void set_remote_motion_command(MotionCommand command) {
   g_remote_command = command;
+  g_remote_command_last_update = millis();
 }
 
 MotionCommand get_remote_motion_command() {
+  unsigned long now = millis();
+
+  if (g_remote_command_last_update == 0) {
+    return MOTION_STOP;
+  }
+
+  if ((now - g_remote_command_last_update) > REMOTE_COMMAND_TIMEOUT_MS) {
+    if (g_remote_command != MOTION_STOP) {
+      g_remote_command = MOTION_STOP;
+    }
+    return MOTION_STOP;
+  }
+
   return g_remote_command;
 }
 
