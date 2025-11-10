@@ -1,8 +1,8 @@
 #include "motor_control.h"
 
 // Variáveis de velocidade independentes
-short usSpeedR = 159; // Velocidade padrão para o Motor R
-short usSpeedL = 159; // Velocidade padrão para o Motor L
+short usSpeedR = 100; // Velocidade padrão para o Motor R
+short usSpeedL = 100; // Velocidade padrão para o Motor L
 unsigned short usMotor_Status = BRAKE;
 unsigned long last_time = 0;
 
@@ -10,6 +10,23 @@ static MotionCommand g_remote_command = MOTION_STOP;
 static MotionCommand g_last_applied_command = MOTION_STOP;
 static unsigned long g_remote_command_last_update = 0;
 static const unsigned long REMOTE_COMMAND_TIMEOUT_MS = 1000;  // 1s sem mensagens -> STOP
+static bool g_pcnt_pins_logged = false;
+
+static void logPcntPinAssignments() {
+  if (g_pcnt_pins_logged) {
+    return;
+  }
+
+  g_pcnt_pins_logged = true;
+  Serial.printf("PCNT unidade 0 (Motor R) – pulse GPIO %d, ctrl GPIO %s\n",
+                ENCODER_RA,
+                "N/A");
+  Serial.printf("PCNT unidade 1 (Motor L) – pulse GPIO %d, ctrl GPIO %s\n",
+                ENCODER_LA,
+                "N/A");
+  Serial.printf("Encoder R -> canal A GPIO %d | canal B GPIO %d\n", ENCODER_RA, ENCODER_RB);
+  Serial.printf("Encoder L -> canal A GPIO %d | canal B GPIO %d\n", ENCODER_LA, ENCODER_LB);
+}
 
 void setupPCNT() {
   pcnt_config_t configR;
@@ -57,6 +74,7 @@ void setupMotor() {
 
   Serial.begin(115200); // Faster baud rate for ESP32
   Serial.println("Begin motor control");
+  logPcntPinAssignments();
 
   Stop();
 }
@@ -98,10 +116,11 @@ void encoder() {
   // --- Impressão desacoplada (opcional) ---
   if ((now - last_print) >= print_ms) {
     last_print = now;
-    Serial.print("VelR: ");
-    Serial.println(velR);
-    Serial.print("VelL: ");
-    Serial.println(velL);
+    Serial.printf("dt=%lums\n", dt);
+    Serial.printf("PCNT U0 (GPIO %d) contagem=%d -> VelR=%.3f rad/s\n",
+                  ENCODER_RA, contagemR, velR);
+    Serial.printf("PCNT U1 (GPIO %d) contagem=%d -> VelL=%.3f rad/s\n",
+                  ENCODER_LA, contagemL, velL);
   }
 }
 
