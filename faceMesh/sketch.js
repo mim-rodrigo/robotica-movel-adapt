@@ -1,5 +1,20 @@
-// === FaceMesh + MQTT: angulação (yaw/pitch/roll) com calibração (tara), FPS (EMA),
-//     layout responsivo, renderização ESPELHADA, e desenho robusto do vídeo ===
+/**
+ * Descrição:
+ * FaceMesh + MQTT para cálculo de ângulos da face (Yaw, Pitch, Roll) e envio para robô.
+ * Utiliza o método robusto de 4 pontos (bochechas, ponte nasal, queixo) para
+ * desacoplamento do Yaw/Pitch.
+ * Inclui calibração (tara), medição de latência (RTT) e renderização espelhada.
+ *
+ * Versão atual: 2.1 (10/11/2025)
+ * - Corrige a ordem do produto vetorial (cross) na linha 73.
+ * - Inverte de cross(v_vec, u_vec) para cross(u_vec, v_vec).
+ * - Isso garante que o vetor normal 'n' aponte para fora do rosto,
+ *   centralizando o 'yaw' em 0° quando o usuário olha para frente.
+ *
+ * Versão anterior: 2.0 (10/11/2025)
+ * - Lógica de ângulos alterada para método robusto de 4 pontos (pontos 234, 454, 6, 152).
+ * - Isso corrigiu o acoplamento onde o 'pitch' (levantar/abaixar cabeça) afetava o 'yaw'.
+ */
 
 // ---------- Config FaceMesh ----------
 let faceMesh;
@@ -11,19 +26,21 @@ let faces = [];
 // ---------- MQTT ----------
 const mqttUrl      = "wss://0e51aa7bffcf45618c342e30a71338e8.s1.eu.hivemq.cloud:8884/mqtt";
 const mqttTopic    = "facemesh/angle"; // publica YAW calibrado (graus)
-const commandTopic = "facemesh/cmd";   // yaw para o robô + medição RTT
-const pongTopic    = "facemesh/pong";  // respostas do ESP32 com nonce/timestamp
+const commandTopic = "facemesh/cmd";
+// yaw para o robô + medição RTT
+const pongTopic    = "facemesh/pong";
+// respostas do ESP32 com nonce/timestamp
 
 const connectOptions = {
   username: "hivemq.webclient.1761227941253",
   password: "&a9<Vzb3sC0A!6ZB>xTm",
   clientId: "p5js_client_" + parseInt(Math.random() * 1000)
 };
+const yawDeadbandLeftDeg  = 15.0;
+const yawDeadbandRightDeg = 15.0;
 
-const yawDeadbandLeftDeg  = 8.0;
-const yawDeadbandRightDeg = 8.0;
-
-const ANGLE_EMA_ALPHA = 0.2; // suavização das leituras finais (0<alpha<=1)
+const ANGLE_EMA_ALPHA = 0.2;
+// suavização das leituras finais (0<alpha<=1)
 
 const filteredAngles = {
   yaw: null,
@@ -35,7 +52,8 @@ let client;
 let mqttInitialized = false;
 
 // ---------- Medição de latência (RTT) ----------
-const perf = (typeof performance !== 'undefined') ? performance : { now: () => Date.now() };
+const perf = (typeof performance !== 'undefined') ?
+performance : { now: () => Date.now() };
 const pendingCommands = new Map();
 const latencyStats = {
   lastRtt: null,
@@ -50,27 +68,30 @@ const latencyStats = {
   lastExecutedAt: null,
   lastReceivedAt: null
 };
-
 const COMMAND_DEBOUNCE_MS = 250;   // tempo mínimo entre mensagens sucessivas (quando variar)
-const COMMAND_REPEAT_MS   = 2000;  // reenvia mesmo yaw periodicamente para medir RTT
-const COMMAND_TIMEOUT_MS  = 5000;  // expira RTT caso não haja pong
-const YAW_EPSILON_DEG     = 1.0;   // variação mínima para considerar mudança
+const COMMAND_REPEAT_MS   = 2000;
+// reenvia mesmo yaw periodicamente para medir RTT
+const COMMAND_TIMEOUT_MS  = 5000;
+// expira RTT caso não haja pong
+const YAW_EPSILON_DEG     = 1.0;
+// variação mínima para considerar mudança
 let lastYawSent = null;
 let lastYawSentAt = 0;
-
 // ---------- Calibração (tara) ----------
 let yawOffset = 0, pitchOffset = 0, rollOffset = 0;
-let lastRaw = null;     // {yaw, pitch, roll} sem calibração
+let lastRaw = null;
+// {yaw, pitch, roll} sem calibração
 let lastCalibTS = null; // millis() da última calibração
 let btnCalib;           // p5 DOM button
-let btnToggleStream;    // botão para pausar/retomar envio MQTT
+let btnToggleStream;
+// botão para pausar/retomar envio MQTT
 let streamingEnabled = true;
 
 // ---------- FPS (EMA – suavizado) ----------
 let fpsEMA = null;
-
 // ---------- Retângulo de desenho do VÍDEO (responsivo) ----------
-let drawRect = { x: 0, y: 0, w: 0, h: 0, sx: 1, sy: 1 }; // x,y,w,h e escalas sx,sy
+let drawRect = { x: 0, y: 0, w: 0, h: 0, sx: 1, sy: 1 };
+// x,y,w,h e escalas sx,sy
 
 // ---------- p5 lifecycle ----------
 function preload() {
@@ -81,7 +102,8 @@ function setup() {
   // canvas ocupa a janela inteira
   createCanvas(windowWidth, windowHeight);
 
-  // captura; FaceMesh usa o elemento de vídeo internamente
+  // captura;
+  // FaceMesh usa o elemento de vídeo internamente
   video = createCapture(VIDEO, () => {
     // assim que a stream subir, calculamos o retângulo de desenho
     updateDrawRect();
@@ -109,7 +131,8 @@ function windowResized() {
 
 // ---------- util: dimensões reais do <video> ----------
 function getVideoDims() {
-  const vw = video?.elt?.videoWidth  || video?.width  || 640;
+  const vw = video?.elt?.videoWidth  || video?.width  ||
+  640;
   const vh = video?.elt?.videoHeight || video?.height || 480;
   return { vw, vh };
 }
@@ -181,10 +204,8 @@ function draw() {
   background(0);
 
   reapExpiredCommands();
-
   // -------- desenha o VÍDEO (robusto + ESPELHADO) --------
   const { vw, vh } = getVideoDims();
-
   if (vw === 0 || vh === 0) {
     // ainda inicializando a câmera
     updateDrawRect();
@@ -193,7 +214,8 @@ function draw() {
   } else {
     // Recalcula se o vídeo mudou de tamanho ou ainda não definimos a área
     const needRecalc =
-      drawRect.w === 0 || drawRect.h === 0 ||
+      drawRect.w === 0 ||
+      drawRect.h === 0 ||
       Math.abs(drawRect.sx - (drawRect.w / vw)) > 1e-6 ||
       Math.abs(drawRect.sy - (drawRect.h / vh)) > 1e-6;
     if (needRecalc) updateDrawRect();
@@ -201,7 +223,8 @@ function draw() {
     // Renderização espelhada via transformações (mais estável que largura negativa)
     push();
     translate(drawRect.x + drawRect.w, drawRect.y); // âncora topo-direito
-    scale(-drawRect.w / vw, drawRect.h / vh);       // espelha no X e ajusta escala
+    scale(-drawRect.w / vw, drawRect.h / vh);
+    // espelha no X e ajusta escala
     image(video, 0, 0, vw, vh);
     pop();
   }
@@ -221,6 +244,7 @@ function draw() {
             console.log("Inscrito em", pongTopic);
           }
         });
+  
         // inicia FaceMesh só após MQTT on-line (opcional; mantém sequenciamento)
         faceMesh.detectStart(video, gotFaces);
       });
@@ -256,46 +280,46 @@ function draw() {
   // -------- Face + Ângulos --------
   if (faces.length > 0) {
     const face = faces[0];
-
     const getKP = (idx) => {
       if (!face.keypoints || face.keypoints.length === 0) return null;
       if (idx >= 0 && idx < face.keypoints.length) return face.keypoints[idx];
       return null;
     };
 
-    // Índices MediaPipe/TFJS comuns
-    const L = getKP(33);           // canto olho esquerdo
-    const R = getKP(263);          // canto olho direito
-    let N = getKP(4) || getKP(1);  // ponta do nariz (fallback)
+    // --- INÍCIO DA MODIFICAÇÃO V2.0 ---
+    // Pontos robustos para eixos desacoplados
+    const P_LEFT_CHEEK  = getKP(234); // Bochecha Esquerda
+    const P_RIGHT_CHEEK = getKP(454); // Bochecha Direita
+    const P_NOSE_BRIDGE = getKP(6);   // Ponte Nasal (entre olhos)
+    const P_CHIN        = getKP(152); // Ponta do Queixo
 
-    if (L && R && N) {
-      // Ângulos calculados em espaço ORIGINAL do modelo (não espelhado)
-      const mid = {
-        x: 0.5 * (L.x + R.x),
-        y: 0.5 * (L.y + R.y),
-        z: (("z" in L) && ("z" in R)) ? 0.5 * (L.z + R.z) : undefined
-      };
+    // Verificar se temos os 4 pontos E se eles têm dados 3D
+    if (P_LEFT_CHEEK && P_RIGHT_CHEEK && P_NOSE_BRIDGE && P_CHIN && hasZ(P_LEFT_CHEEK, P_RIGHT_CHEEK, P_NOSE_BRIDGE, P_CHIN)) {
 
-      const u = vecNorm(vecSub(R, L)); // eixo olhos (esq->dir)
-      const v = vecNorm(vecSub(N, mid));// olhos -> nariz
+      // Calcular eixos (ainda não normalizados)
+      // Eixo horizontal (u): da bochecha esquerda para a direita
+      const u_vec = vecSub(P_RIGHT_CHEEK, P_LEFT_CHEEK);
+      
+      // Eixo vertical (v): da ponte nasal para o queixo
+      const v_vec = vecSub(P_CHIN, P_NOSE_BRIDGE);
 
-      let yawDeg = 0, pitchDeg = 0, rollDeg = 0;
+      // --- INÍCIO DA MODIFICAÇÃO V2.1 ---
+      // Calcular a Normal (n) - o vetor "para frente"
+      // A ordem (u, v) garante que o vetor 'n' aponte PARA FORA do rosto (+Z).
+      const n_vec = cross(u_vec, v_vec);
+      // --- FIM DA MODIFICAÇÃO V2.1 ---
 
-      if (hasZ(L, R, N)) {
-        const n = vecNorm(cross(u, v));   // normal aproximada do rosto
-        // convenção: yaw (+) cabeça vira para a direita da câmera
-        yawDeg   = rad2deg(Math.atan2(n.x, n.z));
-        pitchDeg = rad2deg(Math.atan2(-n.y, n.z));
-        rollDeg  = rad2deg(Math.atan2(u.y, u.x));
-      } else {
-        // fallback 2D aproximado
-        const eyeDist = dist2D(L, R) + 1e-6;
-        const dx = (N.x - mid.x) / eyeDist;
-        const dy = (N.y - mid.y) / eyeDist;
-        yawDeg   = clamp(dx * 60, -60, 60);
-        pitchDeg = clamp(-dy * 60, -60, 60);
-        rollDeg  = rad2deg(Math.atan2(R.y - L.y, R.x - L.x));
-      }
+      // Normalizar os 3 vetores de eixo
+      const u = vecNorm(u_vec); // Eixo X do rosto (esquerda->direita)
+      const v = vecNorm(v_vec); // Eixo Y do rosto (cima->baixo)
+      const n = vecNorm(n_vec); // Eixo Z do rosto (frente)
+
+      // Calcular os ângulos (Euler) a partir dos vetores de eixo
+      // Convenção: yaw (+) cabeça vira para a direita da câmera
+      let yawDeg   = rad2deg(Math.atan2(n.x, n.z));
+      let pitchDeg = rad2deg(Math.atan2(-n.y, n.z));
+      let rollDeg  = rad2deg(Math.atan2(u.y, u.x));
+      // --- FIM DA MODIFICAÇÃO V2.0 (LÓGICA) ---
 
       // guarda leitura crua e aplica offsets (tara)
       lastRaw = { yaw: yawDeg, pitch: pitchDeg, roll: rollDeg };
@@ -323,29 +347,33 @@ function draw() {
       }
 
       maybeSendYawCommand(yawOutput);
-
+      
       // ---- Desenho dos keypoints/linhas ESPELHADOS no CANVAS ----
       const mapPtMirror = (p) => ({
         x: drawRect.x + (drawRect.w - p.x * drawRect.sx),
         y: drawRect.y + (p.y * drawRect.sy)
       });
 
-      const Lc = mapPtMirror(L);
-      const Rc = mapPtMirror(R);
-      const Nc = mapPtMirror(N);
-      const midc = mapPtMirror(mid);
-
-      // keypoints
+      // keypoints (desenha todos)
       for (let j = 0; j < face.keypoints.length; j++) {
         const kp = face.keypoints[j];
         const kc = mapPtMirror(kp);
         fill(0, 255, 0); noStroke(); circle(kc.x, kc.y, 3);
       }
-      // linhas de referência
+      
+      // --- INÍCIO MODIFICAÇÃO DESENHO V2.0 ---
+      // Mapeia os 4 pontos de referência para o canvas espelhado
+      const P_LEFT_c  = mapPtMirror(P_LEFT_CHEEK);
+      const P_RIGHT_c = mapPtMirror(P_RIGHT_CHEEK);
+      const P_NOSE_c  = mapPtMirror(P_NOSE_BRIDGE);
+      const P_CHIN_c  = mapPtMirror(P_CHIN);
+
+      // linhas de referência (eixos)
       stroke(255, 255, 0); strokeWeight(2);
-      line(Lc.x, Lc.y, Rc.x, Rc.y);     // linha dos olhos
-      line(midc.x, midc.y, Nc.x, Nc.y); // olhos -> nariz
-      noStroke(); fill(255, 255, 0); circle(Nc.x, Nc.y, 7);
+      line(P_LEFT_c.x, P_LEFT_c.y, P_RIGHT_c.x, P_RIGHT_c.y); // Eixo U (horizontal)
+      line(P_NOSE_c.x, P_NOSE_c.y, P_CHIN_c.x, P_CHIN_c.y);  // Eixo V (vertical)
+      noStroke();
+      // --- FIM MODIFICAÇÃO DESENHO V2.0 ---
 
       // HUD ângulos (calibrados)
       fill(255); noStroke();
@@ -367,9 +395,10 @@ function draw() {
         text(`Sem tara • clique em "Zerar ângulos (tara)"`, 12, line4);
       }
 
-      // linha do centro do CANVAS até o nariz (já no espaço espelhado)
-      stroke(255, 255, 0); strokeWeight(1.5);
-      line(width/2, height/2, Nc.x, Nc.y);
+      // linha do centro do CANVAS até a referência (ponte nasal)
+      stroke(255, 255, 0);
+      strokeWeight(1.5);
+      line(width/2, height/2, P_NOSE_c.x, P_NOSE_c.y);
       noStroke();
 
     } else {
@@ -419,7 +448,8 @@ function sendYawCommand(yawDeg, { force = false } = {}) {
 
   const nonce = generateNonce();
   const t0 = Date.now();
-  const yawStr = Number.isFinite(yawDeg) ? yawDeg.toFixed(1) : 'NaN';
+  const yawStr = Number.isFinite(yawDeg) ?
+  yawDeg.toFixed(1) : 'NaN';
   const payload = `${yawStr}|${nonce}|${t0}`;
 
   client.publish(commandTopic, payload);
@@ -428,11 +458,11 @@ function sendYawCommand(yawDeg, { force = false } = {}) {
     t0,
     perfStart: perf.now()
   });
-
   lastYawSent = Number.isFinite(yawDeg) ? yawDeg : null;
   lastYawSentAt = millis();
   const previewAction = determineYawAction(yawDeg);
-  latencyStats.lastYaw = Number.isFinite(yawDeg) ? yawDeg : null;
+  latencyStats.lastYaw = Number.isFinite(yawDeg) ?
+  yawDeg : null;
   latencyStats.lastAction = previewAction;
   latencyStats.lastStatus = force ? 'forçado' : 'pendente';
 
@@ -454,7 +484,6 @@ function handlePongMessage(rawMessage) {
   }
 
   pendingCommands.delete(nonce);
-
   const nowPerf = perf.now();
   const rtt = nowPerf - pending.perfStart;
   const prevCount = latencyStats.count;
@@ -463,26 +492,27 @@ function handlePongMessage(rawMessage) {
 
   latencyStats.count = prevCount + 1;
   latencyStats.lastRtt = rtt;
-  latencyStats.min = prevCount === 0 ? rtt : Math.min(latencyStats.min, rtt);
+  latencyStats.min = prevCount === 0 ?
+  rtt : Math.min(latencyStats.min, rtt);
   latencyStats.max = prevCount === 0 ? rtt : Math.max(latencyStats.max, rtt);
-  latencyStats.avg = prevCount === 0 ? rtt : ((latencyStats.avg * prevCount) + rtt) / (prevCount + 1);
+  latencyStats.avg = prevCount === 0 ?
+  rtt : ((latencyStats.avg * prevCount) + rtt) / (prevCount + 1);
   latencyStats.lastYaw = Number.isFinite(yawEchoNum) ? yawEchoNum : pending.yaw;
   latencyStats.lastAction = actionEcho || '—';
   latencyStats.lastStatus = statusText;
   latencyStats.lastT0 = t0Str;
   latencyStats.lastExecutedAt = execTsStr || null;
   latencyStats.lastReceivedAt = Date.now();
-
   console.log(`PONG nonce=${nonce} yaw=${latencyStats.lastYaw?.toFixed?.(1) ?? yawEcho} action=${latencyStats.lastAction} status=${statusText} RTT=${rtt.toFixed(1)} ms`);
 }
 
 function reapExpiredCommands() {
   if (pendingCommands.size === 0) return;
-
   const nowPerf = perf.now();
   for (const [nonce, entry] of pendingCommands) {
     if (nowPerf - entry.perfStart > COMMAND_TIMEOUT_MS) {
-      const yawTxt = (typeof entry.yaw === 'number') ? entry.yaw.toFixed(1) : entry.yaw;
+      const yawTxt = (typeof entry.yaw === 'number') ?
+      entry.yaw.toFixed(1) : entry.yaw;
       console.warn(`Timeout aguardando pong para nonce=${nonce} (yaw=${yawTxt})`);
       pendingCommands.delete(nonce);
       latencyStats.lastYaw = entry.yaw;
@@ -510,15 +540,17 @@ function drawLatencyHUD() {
     ? `${latencyStats.lastRtt.toFixed(1)} ms`
     : '—';
   const minTxt = latencyStats.count > 0 ? `${latencyStats.min.toFixed(1)} ms` : '—';
-  const maxTxt = latencyStats.count > 0 ? `${latencyStats.max.toFixed(1)} ms` : '—';
+  const maxTxt = latencyStats.count > 0 ?
+  `${latencyStats.max.toFixed(1)} ms` : '—';
   const avgTxt = latencyStats.count > 0 ? `${latencyStats.avg.toFixed(1)} ms` : '—';
-  const statusTxt = latencyStats.lastStatus || '—';
+  const statusTxt = latencyStats.lastStatus ||
+  '—';
   const yawTxt = (latencyStats.lastYaw !== null && latencyStats.lastYaw !== undefined)
-    ? `${latencyStats.lastYaw.toFixed(1)}°`
+    ?
+    `${latencyStats.lastYaw.toFixed(1)}°`
     : '—';
   const actionTxt = latencyStats.lastAction || '—';
   const pendingCount = pendingCommands.size;
-
   text(`RTT último: ${lastRttTxt}`, panelX + 10, panelY + 24);
   text(`Mín/Máx/Média: ${minTxt} / ${maxTxt} / ${avgTxt}`, panelX + 10, panelY + 44);
   text(`Yaw echo: ${yawTxt} • Ação: ${actionTxt} (${statusTxt})`, panelX + 10, panelY + 64);
@@ -542,7 +574,8 @@ function updateAngleFilter(axis, value) {
 
   const previous = filteredAngles[axis];
   const filtered = previous === null
-    ? value
+    ?
+    value
     : (ANGLE_EMA_ALPHA * value) + ((1 - ANGLE_EMA_ALPHA) * previous);
 
   filteredAngles[axis] = filtered;
@@ -572,7 +605,8 @@ function cross(a, b) {
   };
 }
 function rad2deg(r) { return r * 180 / Math.PI; }
-function dist2D(a, b) { return Math.hypot(a.x - b.x, a.y - b.y); }
+function dist2D(a, b) { return Math.hypot(a.x - b.x, a.y - b.y);
+}
 function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
 function hasZ(...pts) {
   return pts.every(p => ("z" in p) && p.z !== undefined && !Number.isNaN(p.z));
@@ -582,6 +616,7 @@ function hasZ(...pts) {
 function drawNoFace() {
   fill(255); noStroke();
   rect(6, height - 26, 260, 20, 6);
-  fill(0); textSize(14);
+  fill(0);
+  textSize(14);
   text("Sem rosto detectado…", 12, height - 12);
 }

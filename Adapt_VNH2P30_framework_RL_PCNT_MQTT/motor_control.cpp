@@ -9,7 +9,8 @@ unsigned long last_time = 0;
 static MotionCommand g_remote_command = MOTION_STOP;
 static MotionCommand g_last_applied_command = MOTION_STOP;
 static unsigned long g_remote_command_last_update = 0;
-static const unsigned long REMOTE_COMMAND_TIMEOUT_MS = 1000;  // 1s sem mensagens -> STOP
+static const unsigned long REMOTE_COMMAND_TIMEOUT_MS = 3000;  // 1s sem mensagens -> STOP
+static bool g_pcnt_pins_logged = false;
 
 void setupPCNT() {
   pcnt_config_t configR;
@@ -55,10 +56,7 @@ void setupMotor() {
   digitalWrite(EN_PIN_R, HIGH);
   digitalWrite(EN_PIN_L, HIGH);
 
-  Serial.begin(115200); // Faster baud rate for ESP32
   Serial.println("Begin motor control");
-
-  Stop();
 }
 
 void encoder() {
@@ -96,7 +94,7 @@ void encoder() {
   float velL = (dt > 0) ? (voltasL / (dt / 1000.0f)) * (2.0f * PI) : 0.0f;
 
   // --- Impressão desacoplada (opcional) ---
-  if ((now - last_print) >= print_ms) {
+    if ((now - last_print) >= print_ms) {
     last_print = now;
     Serial.print("VelR: ");
     Serial.println(velR);
