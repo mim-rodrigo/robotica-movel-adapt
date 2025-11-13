@@ -42,6 +42,9 @@ const yawDeadbandRightDeg = 15.0;
 const ANGLE_EMA_ALPHA = 0.2;
 // suavização das leituras finais (0<alpha<=1)
 
+const pitchForwardThresholdDeg = -10;
+const pitchReverseThresholdDeg = 10;
+
 const filteredAngles = {
   yaw: null,
   pitch: null,
@@ -62,6 +65,7 @@ const latencyStats = {
   avg: 0,
   count: 0,
   lastYaw: null,
+  lastPitch: null,
   lastAction: null,
   lastStatus: null,
   lastT0: null,
@@ -70,13 +74,19 @@ const latencyStats = {
 };
 const COMMAND_DEBOUNCE_MS = 250;   // tempo mínimo entre mensagens sucessivas (quando variar)
 const COMMAND_REPEAT_MS   = 2000;
-// reenvia mesmo yaw periodicamente para medir RTT
+// reenvia mesmo comando periodicamente para medir RTT
 const COMMAND_TIMEOUT_MS  = 5000;
 // expira RTT caso não haja pong
-const YAW_EPSILON_DEG     = 1.0;
-// variação mínima para considerar mudança
-let lastYawSent = null;
-let lastYawSentAt = 0;
+const commandEpsilon = {
+  yaw: 1.0,
+  pitch: 1.0
+};
+
+const lastAnglesSent = {
+  yaw: null,
+  pitch: null
+};
+let lastCommandSentAt = 0;
 // ---------- Calibração (tara) ----------
 let yawOffset = 0, pitchOffset = 0, rollOffset = 0;
 let lastRaw = null;
@@ -177,19 +187,23 @@ function toggleStreaming() {
 
   if (!streamingEnabled) {
     console.log('Envio MQTT pausado – enviando comando de parada.');
-    sendYawCommand(NaN, { force: true });
+    sendMotionCommand(NaN, NaN, { force: true });
     pendingCommands.clear();
-    lastYawSent = null;
-    lastYawSentAt = 0;
+    lastAnglesSent.yaw = null;
+    lastAnglesSent.pitch = null;
+    lastCommandSentAt = 0;
     latencyStats.lastYaw = null;
+    latencyStats.lastPitch = null;
     latencyStats.lastAction = 'pausado';
     latencyStats.lastStatus = 'pausado';
     latencyStats.lastRtt = null;
   } else {
     console.log('Envio MQTT retomado.');
-    lastYawSent = null;
-    lastYawSentAt = 0;
+    lastAnglesSent.yaw = null;
+    lastAnglesSent.pitch = null;
+    lastCommandSentAt = 0;
     latencyStats.lastYaw = null;
+    latencyStats.lastPitch = null;
     latencyStats.lastAction = '—';
     latencyStats.lastStatus = 'ativo';
     latencyStats.lastRtt = null;
@@ -346,7 +360,7 @@ function draw() {
         }
       }
 
-      maybeSendYawCommand(yawOutput);
+      maybeSendMotionCommand(yawOutput, pitchOutput);
       
       // ---- Desenho dos keypoints/linhas ESPELHADOS no CANVAS ----
       const mapPtMirror = (p) => ({
@@ -384,9 +398,16 @@ function draw() {
       const line3 = height - 60;
       const line4 = height - 40;
       text(`Yaw (cal/EMA): ${yawCal.toFixed(1)}° / ${yawOutput.toFixed(1)}°   |   Pitch: ${pitchOutput.toFixed(1)}°   |   Roll: ${rollOutput.toFixed(1)}°`, 12, line1);
-      text(`Deadband Esq: ${yawDeadbandLeftDeg.toFixed(1)}°   |   Deadband Dir: ${yawDeadbandRightDeg.toFixed(1)}°`, 12, line2);
-      const previewAction = determineYawAction(yawOutput);
-      const actionLabel = previewAction === 'left' ? 'Esquerda' : (previewAction === 'right' ? 'Direita' : 'Parar');
+      text(`Deadband Esq: ${yawDeadbandLeftDeg.toFixed(1)}°   |   Deadband Dir: ${yawDeadbandRightDeg.toFixed(1)}°   |   Pitch F/R: ${pitchForwardThresholdDeg.toFixed(0)}° / +${pitchReverseThresholdDeg.toFixed(0)}°`, 12, line2);
+      const previewAction = determineMotionAction(yawOutput, pitchOutput);
+      const actionLabelMap = {
+        left: 'Girar Esquerda',
+        right: 'Girar Direita',
+        forward: 'Frente',
+        reverse: 'Ré',
+        stop: 'Parar'
+      };
+      const actionLabel = actionLabelMap[previewAction] || '—';
       text(`Streaming MQTT: ${streamingEnabled ? 'Ativo' : 'Pausado'} • Ação prevista: ${actionLabel}`, 12, line3);
       if (lastCalibTS !== null) {
         const elapsed = ((millis() - lastCalibTS) / 1000).toFixed(1);
@@ -423,7 +444,7 @@ function draw() {
   drawLatencyHUD();
 }
 
-// ---------- Envio de yaw + RTT ----------
+// ---------- Envio de yaw/pitch + RTT ----------
 function determineYawAction(yawDeg) {
   if (!Number.isFinite(yawDeg)) return 'stop';
   if (yawDeg <= -yawDeadbandLeftDeg) return 'left';
@@ -431,52 +452,76 @@ function determineYawAction(yawDeg) {
   return 'stop';
 }
 
-function maybeSendYawCommand(yawCal) {
+function determinePitchAction(pitchDeg) {
+  if (!Number.isFinite(pitchDeg)) return 'stop';
+  if (pitchDeg <= pitchForwardThresholdDeg) return 'forward';
+  if (pitchDeg >= pitchReverseThresholdDeg) return 'reverse';
+  return 'stop';
+}
+
+function determineMotionAction(yawDeg, pitchDeg) {
+  const pitchAction = determinePitchAction(pitchDeg);
+  if (pitchAction !== 'stop') return pitchAction;
+  return determineYawAction(yawDeg);
+}
+
+function maybeSendMotionCommand(yawDeg, pitchDeg) {
   if (!client || !client.connected || !streamingEnabled) return;
 
   const now = millis();
-  const changed = (lastYawSent === null) || Math.abs(yawCal - lastYawSent) >= YAW_EPSILON_DEG;
-  if (!changed && (now - lastYawSentAt) < COMMAND_REPEAT_MS) return;
-  if (changed && (now - lastYawSentAt) < COMMAND_DEBOUNCE_MS) return;
+  const yawChanged = Number.isFinite(yawDeg)
+    ? ((lastAnglesSent.yaw === null) || Math.abs(yawDeg - lastAnglesSent.yaw) >= commandEpsilon.yaw)
+    : (lastAnglesSent.yaw !== null);
+  const pitchChanged = Number.isFinite(pitchDeg)
+    ? ((lastAnglesSent.pitch === null) || Math.abs(pitchDeg - lastAnglesSent.pitch) >= commandEpsilon.pitch)
+    : (lastAnglesSent.pitch !== null);
+  const changed = yawChanged || pitchChanged;
 
-  sendYawCommand(yawCal);
+  if (!changed && (now - lastCommandSentAt) < COMMAND_REPEAT_MS) return;
+  if (changed && (now - lastCommandSentAt) < COMMAND_DEBOUNCE_MS) return;
+
+  sendMotionCommand(yawDeg, pitchDeg);
 }
 
-function sendYawCommand(yawDeg, { force = false } = {}) {
+function sendMotionCommand(yawDeg, pitchDeg, { force = false } = {}) {
   if (!client || !client.connected) return;
   if (!force && !streamingEnabled) return;
 
   const nonce = generateNonce();
   const t0 = Date.now();
   const yawStr = Number.isFinite(yawDeg) ?
-  yawDeg.toFixed(1) : 'NaN';
-  const payload = `${yawStr}|${nonce}|${t0}`;
+    yawDeg.toFixed(1) : 'NaN';
+  const pitchStr = Number.isFinite(pitchDeg) ?
+    pitchDeg.toFixed(1) : 'NaN';
+  const payload = `${yawStr}|${pitchStr}|${nonce}|${t0}`;
 
   client.publish(commandTopic, payload);
   pendingCommands.set(nonce, {
     yaw: Number.isFinite(yawDeg) ? yawDeg : null,
+    pitch: Number.isFinite(pitchDeg) ? pitchDeg : null,
     t0,
     perfStart: perf.now()
   });
-  lastYawSent = Number.isFinite(yawDeg) ? yawDeg : null;
-  lastYawSentAt = millis();
-  const previewAction = determineYawAction(yawDeg);
-  latencyStats.lastYaw = Number.isFinite(yawDeg) ?
-  yawDeg : null;
+  lastAnglesSent.yaw = Number.isFinite(yawDeg) ? yawDeg : null;
+  lastAnglesSent.pitch = Number.isFinite(pitchDeg) ? pitchDeg : null;
+  lastCommandSentAt = millis();
+  const previewAction = determineMotionAction(yawDeg, pitchDeg);
+  latencyStats.lastYaw = Number.isFinite(yawDeg) ? yawDeg : null;
+  latencyStats.lastPitch = Number.isFinite(pitchDeg) ? pitchDeg : null;
   latencyStats.lastAction = previewAction;
   latencyStats.lastStatus = force ? 'forçado' : 'pendente';
 
-  console.log(`MQTT [${commandTopic}] yaw=${yawStr} nonce=${nonce} t0=${t0}`);
+  console.log(`MQTT [${commandTopic}] yaw=${yawStr} pitch=${pitchStr} nonce=${nonce} t0=${t0}`);
 }
 
 function handlePongMessage(rawMessage) {
   const parts = rawMessage.split('|');
-  if (parts.length < 5) {
+  if (parts.length < 7) {
     console.warn('Pong inválido:', rawMessage);
     return;
   }
 
-  const [nonce, t0Str, execTsStr, yawEcho = '', actionEcho = '', status = 'ok'] = parts;
+  const [nonce, t0Str, execTsStr, yawEcho = '', pitchEcho = '', actionEcho = '', status = 'ok'] = parts;
   const pending = pendingCommands.get(nonce);
   if (!pending) {
     console.warn('Pong sem pendência correspondente:', rawMessage);
@@ -489,21 +534,23 @@ function handlePongMessage(rawMessage) {
   const prevCount = latencyStats.count;
   const statusText = status || 'ok';
   const yawEchoNum = parseFloat(yawEcho);
+  const pitchEchoNum = parseFloat(pitchEcho);
 
   latencyStats.count = prevCount + 1;
   latencyStats.lastRtt = rtt;
   latencyStats.min = prevCount === 0 ?
-  rtt : Math.min(latencyStats.min, rtt);
+    rtt : Math.min(latencyStats.min, rtt);
   latencyStats.max = prevCount === 0 ? rtt : Math.max(latencyStats.max, rtt);
   latencyStats.avg = prevCount === 0 ?
-  rtt : ((latencyStats.avg * prevCount) + rtt) / (prevCount + 1);
+    rtt : ((latencyStats.avg * prevCount) + rtt) / (prevCount + 1);
   latencyStats.lastYaw = Number.isFinite(yawEchoNum) ? yawEchoNum : pending.yaw;
+  latencyStats.lastPitch = Number.isFinite(pitchEchoNum) ? pitchEchoNum : pending.pitch;
   latencyStats.lastAction = actionEcho || '—';
   latencyStats.lastStatus = statusText;
   latencyStats.lastT0 = t0Str;
   latencyStats.lastExecutedAt = execTsStr || null;
   latencyStats.lastReceivedAt = Date.now();
-  console.log(`PONG nonce=${nonce} yaw=${latencyStats.lastYaw?.toFixed?.(1) ?? yawEcho} action=${latencyStats.lastAction} status=${statusText} RTT=${rtt.toFixed(1)} ms`);
+  console.log(`PONG nonce=${nonce} yaw=${latencyStats.lastYaw?.toFixed?.(1) ?? yawEcho} pitch=${latencyStats.lastPitch?.toFixed?.(1) ?? pitchEcho} action=${latencyStats.lastAction} status=${statusText} RTT=${rtt.toFixed(1)} ms`);
 }
 
 function reapExpiredCommands() {
@@ -513,9 +560,11 @@ function reapExpiredCommands() {
     if (nowPerf - entry.perfStart > COMMAND_TIMEOUT_MS) {
       const yawTxt = (typeof entry.yaw === 'number') ?
       entry.yaw.toFixed(1) : entry.yaw;
-      console.warn(`Timeout aguardando pong para nonce=${nonce} (yaw=${yawTxt})`);
+      const pitchTxt = (typeof entry.pitch === 'number') ? entry.pitch.toFixed(1) : entry.pitch;
+      console.warn(`Timeout aguardando pong para nonce=${nonce} (yaw=${yawTxt} | pitch=${pitchTxt ?? '—'})`);
       pendingCommands.delete(nonce);
       latencyStats.lastYaw = entry.yaw;
+      latencyStats.lastPitch = entry.pitch ?? null;
       latencyStats.lastAction = 'timeout';
       latencyStats.lastStatus = 'timeout';
       latencyStats.lastRtt = null;
@@ -524,8 +573,8 @@ function reapExpiredCommands() {
 }
 
 function drawLatencyHUD() {
-  const panelWidth = 320;
-  const panelHeight = 96;
+  const panelWidth = 340;
+  const panelHeight = 124;
   const panelX = width - panelWidth - 10;
   const panelY = 46;
 
@@ -546,15 +595,18 @@ function drawLatencyHUD() {
   const statusTxt = latencyStats.lastStatus ||
   '—';
   const yawTxt = (latencyStats.lastYaw !== null && latencyStats.lastYaw !== undefined)
-    ?
-    `${latencyStats.lastYaw.toFixed(1)}°`
+    ? `${latencyStats.lastYaw.toFixed(1)}°`
+    : '—';
+  const pitchTxt = (latencyStats.lastPitch !== null && latencyStats.lastPitch !== undefined)
+    ? `${latencyStats.lastPitch.toFixed(1)}°`
     : '—';
   const actionTxt = latencyStats.lastAction || '—';
   const pendingCount = pendingCommands.size;
   text(`RTT último: ${lastRttTxt}`, panelX + 10, panelY + 24);
   text(`Mín/Máx/Média: ${minTxt} / ${maxTxt} / ${avgTxt}`, panelX + 10, panelY + 44);
-  text(`Yaw echo: ${yawTxt} • Ação: ${actionTxt} (${statusTxt})`, panelX + 10, panelY + 64);
-  text(`Amostras: ${latencyStats.count} • Pendentes: ${pendingCount}`, panelX + 10, panelY + 84);
+  text(`Yaw echo: ${yawTxt} • Pitch echo: ${pitchTxt}`, panelX + 10, panelY + 64);
+  text(`Ação: ${actionTxt} (${statusTxt})`, panelX + 10, panelY + 84);
+  text(`Amostras: ${latencyStats.count} • Pendentes: ${pendingCount}`, panelX + 10, panelY + 104);
 }
 
 function generateNonce() {
