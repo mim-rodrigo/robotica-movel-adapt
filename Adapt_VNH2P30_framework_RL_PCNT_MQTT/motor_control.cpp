@@ -1,107 +1,39 @@
 #include "motor_control.h"
 
 // Variáveis de velocidade independentes
-short usSpeedR = 100; // Velocidade padrão para o Motor R
-short usSpeedL = 100; // Velocidade padrão para o Motor L
+short usSpeedR = 159; // Velocidade padrão para o Motor R
+short usSpeedL = 159; // Velocidade padrão para o Motor L
 unsigned short usMotor_Status = BRAKE;
 unsigned long last_time = 0;
 
 static MotionCommand g_remote_command = MOTION_STOP;
 static MotionCommand g_last_applied_command = MOTION_STOP;
 static unsigned long g_remote_command_last_update = 0;
-static const unsigned long REMOTE_COMMAND_TIMEOUT_MS = 1000;  // 1s sem mensagens -> STOP
+static const unsigned long REMOTE_COMMAND_TIMEOUT_MS = 3000;  // 1s sem mensagens -> STOP
 static bool g_pcnt_pins_logged = false;
 
-namespace {
-
-bool configureEncoderUnit(pcnt_unit_t unit,
-                          gpio_num_t pulse_gpio,
-                          gpio_num_t ctrl_gpio,
-                          const char* label,
-                          bool invert_ctrl_logic) {
-  pcnt_config_t config{};
-  config.pulse_gpio_num = pulse_gpio;
-  config.ctrl_gpio_num = ctrl_gpio;
-  config.channel = PCNT_CHANNEL_0;
-  config.unit = unit;
-  config.pos_mode = PCNT_COUNT_INC;
-  config.neg_mode = PCNT_COUNT_DEC;
-  // Quando o sinal de controle estiver no nível configurado, invertemos o sentido da contagem
-  // para que o giro "para trás" produza valores negativos.
-  if (invert_ctrl_logic) {
-    config.lctrl_mode = PCNT_MODE_KEEP;
-    config.hctrl_mode = PCNT_MODE_REVERSE;
-  } else {
-    config.lctrl_mode = PCNT_MODE_REVERSE;
-    config.hctrl_mode = PCNT_MODE_KEEP;
-  }
-  config.counter_h_lim = 10000;
-  config.counter_l_lim = -10000;
-
-  esp_err_t err = pcnt_unit_config(&config);
-  if (err != ESP_OK) {
-    Serial.printf("[PCNT] Falha ao configurar unidade %d (%s): err=%d\n",
-                  static_cast<int>(unit), label, static_cast<int>(err));
-    return false;
-  }
-
-  // Filtro simples para evitar bounces (valor em ticks de clock APB ~80MHz)
-  pcnt_set_filter_value(unit, 1023);
-  pcnt_filter_enable(unit);
-
-  pcnt_counter_pause(unit);
-  pcnt_counter_clear(unit);
-  pcnt_counter_resume(unit);
-
-  Serial.printf(
-      "[PCNT] Unidade %d pronta (%s) – pulse GPIO %d, ctrl GPIO %d%s\n",
-      static_cast<int>(unit),
-      label,
-      static_cast<int>(pulse_gpio),
-      static_cast<int>(ctrl_gpio),
-      invert_ctrl_logic ? " (invert ctrl)" : "");
-  return true;
-}
-
-}  // namespace
-
-static void logPcntPinAssignments() {
-  if (g_pcnt_pins_logged) {
-    return;
-  }
-
-  g_pcnt_pins_logged = true;
-  Serial.printf("PCNT unidade 0 (Motor R) – pulse GPIO %d, ctrl GPIO %d\n",
-                ENCODER_RA,
-                ENCODER_RB);
-  Serial.printf("PCNT unidade 1 (Motor L) – pulse GPIO %d, ctrl GPIO %d\n",
-                ENCODER_LA,
-                ENCODER_LB);
-  Serial.printf("Encoder R -> canal A GPIO %d | canal B GPIO %d\n", ENCODER_RA, ENCODER_RB);
-  Serial.printf("Encoder L -> canal A GPIO %d | canal B GPIO %d\n", ENCODER_LA, ENCODER_LB);
-}
-
 void setupPCNT() {
-  pinMode(ENCODER_RA, INPUT_PULLUP);
-  pinMode(ENCODER_RB, INPUT_PULLUP);
-  pinMode(ENCODER_LA, INPUT_PULLUP);
-  pinMode(ENCODER_LB, INPUT_PULLUP);
+  pcnt_config_t configR;
+  configR.pulse_gpio_num = ENCODER_RA;
+  configR.ctrl_gpio_num = PCNT_PIN_NOT_USED;
+  configR.channel = PCNT_CHANNEL_0;
+  configR.unit = PCNT_UNIT_0;
+  configR.pos_mode = PCNT_COUNT_INC;
+  configR.neg_mode = PCNT_COUNT_DIS;
+  configR.lctrl_mode = PCNT_MODE_KEEP;
+  configR.hctrl_mode = PCNT_MODE_KEEP;
+  configR.counter_h_lim = 10000;
+  configR.counter_l_lim = -10000;
+  pcnt_unit_config(&configR);
+  pcnt_counter_clear(PCNT_UNIT_0);
+  pcnt_counter_resume(PCNT_UNIT_0);
 
-  bool right_ok = configureEncoderUnit(PCNT_UNIT_0,
-                                       static_cast<gpio_num_t>(ENCODER_RA),
-                                       static_cast<gpio_num_t>(ENCODER_RB),
-                                       "Motor R",
-                                       false);
-  bool left_ok = configureEncoderUnit(PCNT_UNIT_1,
-                                      static_cast<gpio_num_t>(ENCODER_LA),
-                                      static_cast<gpio_num_t>(ENCODER_LB),
-                                      "Motor L",
-                                      true);
-
-  if (!right_ok || !left_ok) {
-    Serial.println(
-        F("[PCNT] Atenção: falha ao configurar alguma unidade. Confira os pinos dos encoders."));
-  }
+  pcnt_config_t configL = configR;
+  configL.pulse_gpio_num = ENCODER_LA;
+  configL.unit = PCNT_UNIT_1;
+  pcnt_unit_config(&configL);
+  pcnt_counter_clear(PCNT_UNIT_1);
+  pcnt_counter_resume(PCNT_UNIT_1);
 }
 
 void setupMotor() {
@@ -124,11 +56,7 @@ void setupMotor() {
   digitalWrite(EN_PIN_R, HIGH);
   digitalWrite(EN_PIN_L, HIGH);
 
-  Serial.begin(115200); // Faster baud rate for ESP32
   Serial.println("Begin motor control");
-  logPcntPinAssignments();
-
-  Stop();
 }
 
 void encoder() {
@@ -166,22 +94,12 @@ void encoder() {
   float velL = (dt > 0) ? (voltasL / (dt / 1000.0f)) * (2.0f * PI) : 0.0f;
 
   // --- Impressão desacoplada (opcional) ---
-  if ((now - last_print) >= print_ms) {
+    if ((now - last_print) >= print_ms) {
     last_print = now;
-    Serial.printf("dt=%lums\n", dt);
-    Serial.printf("PCNT U0 (GPIO %d) contagem=%d -> VelR=%.3f rad/s\n",
-                  ENCODER_RA, contagemR, velR);
-    Serial.printf("PCNT U1 (GPIO %d) contagem=%d -> VelL=%.3f rad/s\n",
-                  ENCODER_LA, contagemL, velL);
-
-    static unsigned long last_zero_warn = 0;
-    if (contagemR == 0 && contagemL != 0 && (now - last_zero_warn) > 500) {
-      last_zero_warn = now;
-      Serial.printf(
-          "[PCNT] Aviso: contador do Motor R segue em zero. Estado instantâneo A=%d B=%d\n",
-          digitalRead(ENCODER_RA),
-          digitalRead(ENCODER_RB));
-    }
+    Serial.print("VelR: ");
+    Serial.println(velR);
+    Serial.print("VelL: ");
+    Serial.println(velL);
   }
 }
 
