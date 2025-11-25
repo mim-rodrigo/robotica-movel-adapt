@@ -1,16 +1,77 @@
 #include "motor_control.h"
+#include <math.h>
 
-// Variáveis de velocidade independentes
-short usSpeedR = 159; // Velocidade padrão para o Motor R
-short usSpeedL = 159; // Velocidade padrão para o Motor L
-unsigned short usMotor_Status = BRAKE;
-unsigned long last_time = 0;
+static unsigned short usMotor_Status = BRAKE;
+static unsigned long last_time = 0;
+
+static uint8_t currentPwmR = 0;
+static uint8_t currentPwmL = 0;
+static float targetVelR = 0.0f;
+static float targetVelL = 0.0f;
+static uint8_t lastDirectionR = BRAKE;
+static uint8_t lastDirectionL = BRAKE;
+
+static const uint8_t PWM_STEP = 2;
+static const float MAX_TARGET_VELOCITY = 400.0f;
+static const uint8_t DEFAULT_PWM_FORWARD = 159;
+static const uint8_t DEFAULT_PWM_REVERSE = 159;
+static const uint8_t DEFAULT_PWM_TURN = 159;
 
 static MotionCommand g_remote_command = MOTION_STOP;
 static MotionCommand g_last_applied_command = MOTION_STOP;
 static unsigned long g_remote_command_last_update = 0;
 static const unsigned long REMOTE_COMMAND_TIMEOUT_MS = 3000;  // 1s sem mensagens -> STOP
 static bool g_pcnt_pins_logged = false;
+
+static float pwmToTargetVelocity(uint8_t pwm) {
+  return (pwm / 255.0f) * MAX_TARGET_VELOCITY;
+}
+
+static void setTargetVelocities(uint8_t pwmR, uint8_t pwmL, bool oppositeDirections) {
+  float baseTarget = pwmToTargetVelocity(static_cast<uint8_t>((pwmR + pwmL) / 2));
+  targetVelR = baseTarget;
+  targetVelL = oppositeDirections ? -baseTarget : baseTarget;
+}
+
+static uint8_t adjustPwm(uint8_t current, float measured, float target) {
+  const float tolerance = 0.5f;
+
+  if (target <= tolerance) {
+    return (current > PWM_STEP) ? current - PWM_STEP : 0;
+  }
+
+  if (measured < (target - tolerance)) {
+    return (current + PWM_STEP > 255) ? 255 : current + PWM_STEP;
+  }
+
+  if (measured > (target + tolerance)) {
+    return (current > PWM_STEP) ? current - PWM_STEP : 0;
+  }
+
+  return current;
+}
+
+static void synchronizeWheels(MotionCommand command, float velR, float velL) {
+  const float syncTolerance = 0.5f;
+  float diff = fabs(velR) - fabs(velL);
+
+  if (fabs(diff) < syncTolerance) {
+    return;
+  }
+
+  if (diff > 0) {
+    currentPwmR = (currentPwmR > 0) ? currentPwmR - 1 : 0;
+    currentPwmL = (currentPwmL < 255) ? currentPwmL + 1 : currentPwmL;
+  } else {
+    currentPwmL = (currentPwmL > 0) ? currentPwmL - 1 : 0;
+    currentPwmR = (currentPwmR < 255) ? currentPwmR + 1 : currentPwmR;
+  }
+
+  if (command == MOTION_STOP) {
+    currentPwmR = 0;
+    currentPwmL = 0;
+  }
+}
 
 void setupPCNT() {
   pcnt_config_t configR;
@@ -93,6 +154,17 @@ void encoder() {
   float velR = (dt > 0) ? (voltasR / (dt / 1000.0f)) * (2.0f * PI) : 0.0f;
   float velL = (dt > 0) ? (voltasL / (dt / 1000.0f)) * (2.0f * PI) : 0.0f;
 
+  float targetMagR = fabs(targetVelR);
+  float targetMagL = fabs(targetVelL);
+
+  currentPwmR = adjustPwm(currentPwmR, fabs(velR), targetMagR);
+  currentPwmL = adjustPwm(currentPwmL, fabs(velL), targetMagL);
+
+  synchronizeWheels(g_last_applied_command, velR, velL);
+
+  motorGo(MOTOR_R, lastDirectionR, currentPwmR);
+  motorGo(MOTOR_L, lastDirectionL, currentPwmL);
+
   // --- Impressão desacoplada (opcional) ---
     if ((now - last_print) >= print_ms) {
     last_print = now;
@@ -105,43 +177,75 @@ void encoder() {
 
 void Stop() {
   usMotor_Status = BRAKE;
+  targetVelR = 0.0f;
+  targetVelL = 0.0f;
+  currentPwmR = 0;
+  currentPwmL = 0;
+  lastDirectionR = BRAKE;
+  lastDirectionL = BRAKE;
   motorGo(MOTOR_R, usMotor_Status, 0);
   motorGo(MOTOR_L, usMotor_Status, 0);
   g_last_applied_command = MOTION_STOP;
 }
 
-void Forward() {
+void Forward(uint8_t usSpeedR, uint8_t usSpeedL) {
   if (!block_foward) {
     usMotor_Status = CW;
-    motorGo(MOTOR_R, usMotor_Status, usSpeedR); // Usa usSpeedR
-    motorGo(MOTOR_L, usMotor_Status, usSpeedL); // Usa usSpeedL
+    lastDirectionR = CW;
+    lastDirectionL = CW;
+    currentPwmR = usSpeedR;
+    currentPwmL = usSpeedL;
+    setTargetVelocities(usSpeedR, usSpeedL, false);
+    motorGo(MOTOR_R, lastDirectionR, currentPwmR);
+    motorGo(MOTOR_L, lastDirectionL, currentPwmL);
     g_last_applied_command = MOTION_FORWARD;
   }
 }
 
-void Reverse() {
+void Reverse(uint8_t usSpeedR, uint8_t usSpeedL) {
   if (!block_reverse) {
     usMotor_Status = CCW;
-    motorGo(MOTOR_R, usMotor_Status, usSpeedR); // Usa usSpeedR
-    motorGo(MOTOR_L, usMotor_Status, usSpeedL); // Usa usSpeedL
+    lastDirectionR = CCW;
+    lastDirectionL = CCW;
+    currentPwmR = usSpeedR;
+    currentPwmL = usSpeedL;
+    setTargetVelocities(usSpeedR, usSpeedL, false);
+    motorGo(MOTOR_R, lastDirectionR, currentPwmR);
+    motorGo(MOTOR_L, lastDirectionL, currentPwmL);
     g_last_applied_command = MOTION_REVERSE;
   }
 }
 
-void TurnLeft() {
-  motorGo(MOTOR_R, CW, usSpeedR);  // Usa usSpeedR
-  motorGo(MOTOR_L, CCW, usSpeedL); // Usa usSpeedL
+void TurnLeft(uint8_t usSpeedR, uint8_t usSpeedL) {
+  lastDirectionR = CW;
+  lastDirectionL = CCW;
+  currentPwmR = usSpeedR;
+  currentPwmL = usSpeedL;
+  setTargetVelocities(usSpeedR, usSpeedL, true);
+  motorGo(MOTOR_R, lastDirectionR, currentPwmR);  // Usa usSpeedR
+  motorGo(MOTOR_L, lastDirectionL, currentPwmL); // Usa usSpeedL
   g_last_applied_command = MOTION_TURN_LEFT;
 }
 
-void TurnRight() {
-  motorGo(MOTOR_R, CCW, usSpeedR); // Usa usSpeedR
-  motorGo(MOTOR_L, CW, usSpeedL);  // Usa usSpeedL
+void TurnRight(uint8_t usSpeedR, uint8_t usSpeedL) {
+  lastDirectionR = CCW;
+  lastDirectionL = CW;
+  currentPwmR = usSpeedR;
+  currentPwmL = usSpeedL;
+  setTargetVelocities(usSpeedR, usSpeedL, true);
+  motorGo(MOTOR_R, lastDirectionR, currentPwmR); // Usa usSpeedR
+  motorGo(MOTOR_L, lastDirectionL, currentPwmL);  // Usa usSpeedL
   g_last_applied_command = MOTION_TURN_RIGHT;
 }
 
 void Lock() {
   usMotor_Status = BRAKE;
+  targetVelR = 0.0f;
+  targetVelL = 0.0f;
+  currentPwmR = 0;
+  currentPwmL = 0;
+  lastDirectionR = BRAKE;
+  lastDirectionL = BRAKE;
   motorGo(MOTOR_R, usMotor_Status, 0);
   motorGo(MOTOR_L, usMotor_Status, 0);
   digitalWrite(EN_PIN_R, LOW);
@@ -207,16 +311,16 @@ static void apply_motion_now(MotionCommand command) {
       Stop();
       break;
     case MOTION_FORWARD:
-      Forward();
+      Forward(DEFAULT_PWM_FORWARD, DEFAULT_PWM_FORWARD);
       break;
     case MOTION_REVERSE:
-      Reverse();
+      Reverse(DEFAULT_PWM_REVERSE, DEFAULT_PWM_REVERSE);
       break;
     case MOTION_TURN_LEFT:
-      TurnLeft();
+      TurnLeft(DEFAULT_PWM_TURN, DEFAULT_PWM_TURN);
       break;
     case MOTION_TURN_RIGHT:
-      TurnRight();
+      TurnRight(DEFAULT_PWM_TURN, DEFAULT_PWM_TURN);
       break;
   }
 }
