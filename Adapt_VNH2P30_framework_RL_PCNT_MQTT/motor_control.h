@@ -46,10 +46,10 @@ void setupPCNT();
 void setupMotor();
 void encoder();
 void Stop();
-void Forward();
-void Reverse();
-void TurnLeft();
-void TurnRight();
+void Forward(uint8_t usSpeedR, uint8_t usSpeedL);
+void Reverse(uint8_t usSpeedR, uint8_t usSpeedL);
+void TurnLeft(uint8_t usSpeedR, uint8_t usSpeedL);
+void TurnRight(uint8_t usSpeedR, uint8_t usSpeedL);
 void Lock();
 
 void set_remote_motion_command(MotionCommand command);
@@ -57,10 +57,6 @@ MotionCommand get_remote_motion_command();
 void apply_motion_command(MotionCommand command);
 
 void motorGo(uint8_t motor, uint8_t direct, uint8_t pwm);
-
-// Declarações das novas variáveis de velocidade
-extern short usSpeedR; // Velocidade para o Motor R
-extern short usSpeedL; // Velocidade para o Motor L
 
 extern bool block_foward;
 extern bool block_reverse;
