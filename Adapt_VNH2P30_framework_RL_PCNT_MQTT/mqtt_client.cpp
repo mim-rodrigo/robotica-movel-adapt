@@ -63,13 +63,18 @@ static void mqtt_reconnect();
 static void handle_command_message(const String& payload);
 static bool parse_command_payload(const String& payload,
                                   float& yawDeg,
+                                  float& pitchDeg,
                                   String& nonce,
                                   String& timestamp);
-static bool execute_yaw_command(float yawDeg, String& executedCommand);
+static bool parse_angle_field(const String& src, float& value);
+static bool execute_motion_command(float yawDeg,
+                                   float pitchDeg,
+                                   String& executedCommand);
 static void publish_pong(const String& nonce,
                          const String& timestamp,
                          unsigned long executed_at,
                          float yawDeg,
+                         float pitchDeg,
                          const String& executedCommand,
                          bool success);
 static bool enable_insecure_tls(WiFiClientSecure& client);
@@ -237,22 +242,30 @@ bool net_mqtt_publish(const char* topic, const char* payload) {
 
 static void handle_command_message(const String& payload) {
   float yawDeg = 0.0f;
+  float pitchDeg = 0.0f;
   String nonce;
   String timestamp;
-  if (!parse_command_payload(payload, yawDeg, nonce, timestamp)) {
-    Serial.println(F("[MQTT] Payload inválido (esperado: yaw|nonce|timestamp)."));
+  if (!parse_command_payload(payload, yawDeg, pitchDeg, nonce, timestamp)) {
+    Serial.println(F("[MQTT] Payload inválido (esperado: yaw|pitch|nonce|timestamp)."));
     return;
   }
 
   Serial.print(F("[MQTT] Yaw recebido: "));
   Serial.print(yawDeg, 2);
-  Serial.print(F("° | nonce="));
+  Serial.print(F("° | Pitch: "));
+  if (isnan(pitchDeg)) {
+    Serial.print(F("NaN"));
+  } else {
+    Serial.print(pitchDeg, 2);
+    Serial.print(F("°"));
+  }
+  Serial.print(F(" | nonce="));
   Serial.print(nonce);
   Serial.print(F(" | t0="));
   Serial.println(timestamp);
 
   String executedCommand;
-  bool success = execute_yaw_command(yawDeg, executedCommand);
+  bool success = execute_motion_command(yawDeg, pitchDeg, executedCommand);
   if (!success && executedCommand.length() == 0) {
     executedCommand = F("noop");
   }
@@ -261,11 +274,12 @@ static void handle_command_message(const String& payload) {
   Serial.print(F(" | sucesso="));
   Serial.println(success ? F("sim") : F("não"));
   unsigned long executed_at = millis();
-  publish_pong(nonce, timestamp, executed_at, yawDeg, executedCommand, success);
+  publish_pong(nonce, timestamp, executed_at, yawDeg, pitchDeg, executedCommand, success);
 }
 
 static bool parse_command_payload(const String& payload,
                                   float& yawDeg,
+                                  float& pitchDeg,
                                   String& nonce,
                                   String& timestamp) {
   int first_sep = payload.indexOf('|');
@@ -274,29 +288,54 @@ static bool parse_command_payload(const String& payload,
   int second_sep = payload.indexOf('|', first_sep + 1);
   if (second_sep < 0) return false;
 
+  int third_sep = payload.indexOf('|', second_sep + 1);
+  if (third_sep < 0) return false;
+
   String yawStr = payload.substring(0, first_sep);
   yawStr.trim();
 
-  nonce = payload.substring(first_sep + 1, second_sep);
+  String pitchStr = payload.substring(first_sep + 1, second_sep);
+  pitchStr.trim();
+
+  nonce = payload.substring(second_sep + 1, third_sep);
   nonce.trim();
 
-  timestamp = payload.substring(second_sep + 1);
+  timestamp = payload.substring(third_sep + 1);
   timestamp.trim();
 
-  if (yawStr.length() == 0 || nonce.length() == 0 || timestamp.length() == 0) {
+  if (yawStr.length() == 0 || pitchStr.length() == 0 || nonce.length() == 0 ||
+      timestamp.length() == 0) {
     return false;
   }
 
-  String yawLower = yawStr;
-  yawLower.toLowerCase();
-  if (yawLower == F("nan")) {
-    yawDeg = NAN;
+  if (!parse_angle_field(yawStr, yawDeg)) {
+    return false;
+  }
+
+  if (!parse_angle_field(pitchStr, pitchDeg)) {
+    return false;
+  }
+
+  return true;
+}
+
+static bool parse_angle_field(const String& src, float& value) {
+  String trimmed = src;
+  trimmed.trim();
+  if (trimmed.length() == 0) {
+    return false;
+  }
+
+  String lower = trimmed;
+  lower.toLowerCase();
+  if (lower == F("nan")) {
+    value = NAN;
     return true;
   }
 
   bool hasDigit = false;
-  for (size_t i = 0; i < static_cast<size_t>(yawStr.length()); ++i) {
-    char c = yawStr.charAt(i);
+  for (size_t i = 0; i < static_cast<size_t>(trimmed.length()); ++i) {
+    char c = trimmed.charAt(i);
     if (isdigit(static_cast<unsigned char>(c))) {
       hasDigit = true;
       break;
@@ -310,17 +349,34 @@ static bool parse_command_payload(const String& payload,
     return false;
   }
 
-  yawDeg = yawStr.toFloat();
-  if (isnan(yawDeg) || isinf(yawDeg)) {
+  value = trimmed.toFloat();
+  if (isnan(value) || isinf(value)) {
     return false;
   }
 
   return true;
 }
 
-static bool execute_yaw_command(float yawDeg, String& executedCommand) {
+static bool execute_motion_command(float yawDeg,
+                                   float pitchDeg,
+                                   String& executedCommand) {
   static const float yawDeadbandLeft = 8.0f;
   static const float yawDeadbandRight = 8.0f;
+  static const float pitchForwardThreshold = -10.0f;
+  static const float pitchReverseThreshold = 10.0f;
+
+  const bool pitchValid = !isnan(pitchDeg);
+  if (pitchValid && pitchDeg <= pitchForwardThreshold) {
+    set_remote_motion_command(MOTION_FORWARD);
+    executedCommand = F("forward");
+    return true;
+  }
+
+  if (pitchValid && pitchDeg >= pitchReverseThreshold) {
+    set_remote_motion_command(MOTION_REVERSE);
+    executedCommand = F("reverse");
+    return true;
+  }
 
   if (isnan(yawDeg)) {
     set_remote_motion_command(MOTION_STOP);
@@ -349,6 +405,7 @@ static void publish_pong(const String& nonce,
                          const String& timestamp,
                          unsigned long executed_at,
                          float yawDeg,
+                         float pitchDeg,
                          const String& executedCommand,
                          bool success) {
   if (!g_pub_topic || !*g_pub_topic) {
@@ -363,6 +420,8 @@ static void publish_pong(const String& nonce,
   payload += String(executed_at);
   payload += '|';
   payload += String(yawDeg, 2);
+  payload += '|';
+  payload += String(pitchDeg, 2);
   payload += '|';
   payload += executedCommand;
   payload += '|';
