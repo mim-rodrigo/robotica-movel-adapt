@@ -221,8 +221,8 @@ void Reverse(uint8_t usSpeedR, uint8_t usSpeedL) {
 }
 
 void TurnLeft(uint8_t usSpeedR, uint8_t usSpeedL) {
-  lastDirectionR = CW;
-  lastDirectionL = CCW;
+  lastDirectionR = CCW;
+  lastDirectionL = CW;
   currentPwmR = usSpeedR;
   currentPwmL = usSpeedL;
   setTargetVelocities(usSpeedR, usSpeedL, true);
@@ -232,8 +232,8 @@ void TurnLeft(uint8_t usSpeedR, uint8_t usSpeedL) {
 }
 
 void TurnRight(uint8_t usSpeedR, uint8_t usSpeedL) {
-  lastDirectionR = CCW;
-  lastDirectionL = CW;
+  lastDirectionR = CW;
+  lastDirectionL = CCW;
   currentPwmR = usSpeedR;
   currentPwmL = usSpeedL;
   setTargetVelocities(usSpeedR, usSpeedL, true);
