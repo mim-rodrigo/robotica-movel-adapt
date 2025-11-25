@@ -28,9 +28,13 @@ static float pwmToTargetVelocity(uint8_t pwm) {
 }
 
 static void setTargetVelocities(uint8_t pwmR, uint8_t pwmL, bool oppositeDirections) {
-  float baseTarget = pwmToTargetVelocity(static_cast<uint8_t>((pwmR + pwmL) / 2));
-  targetVelR = baseTarget;
-  targetVelL = oppositeDirections ? -baseTarget : baseTarget;
+  if (oppositeDirections) {
+    targetVelR = pwmToTargetVelocity(pwmR);
+    targetVelL = -pwmToTargetVelocity(pwmL);
+  } else {
+    targetVelR = pwmToTargetVelocity(pwmR);
+    targetVelL = pwmToTargetVelocity(pwmL);
+  }
 }
 
 static uint8_t adjustPwm(uint8_t current, float measured, float target) {
