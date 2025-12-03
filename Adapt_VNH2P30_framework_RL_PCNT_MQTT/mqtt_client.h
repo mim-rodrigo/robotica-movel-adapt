@@ -15,6 +15,8 @@ void net_set_broker(const char* host, int port,
 void net_set_topic(const char* topic);
 // Define o tópico padrão para respostas (pong)
 void net_set_pub_topic(const char* topic);
+// Define o tópico usado para publicar odometria
+void net_set_odom_topic(const char* topic);
 
 // (Opcional) definir Root CA (PEM) para validação TLS.
 // Se definido E insecureTLS=false em net_set_broker, usará setCACert(rootCA).
@@ -22,3 +24,6 @@ void net_set_root_ca(const char* root_ca_pem);
 
 // (Opcional) publicar algo, caso integre com outros módulos depois.
 bool net_mqtt_publish(const char* topic, const char* payload);
+
+// Publica x', y' e phi' calculados pelo robô
+bool net_publish_odometry(float x_dot, float y_dot, float phi_dot);

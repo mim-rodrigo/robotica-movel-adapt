@@ -1,5 +1,6 @@
 #include "motor_control.h"
 #include <math.h>
+#include "mqtt_client.h"
 
 static unsigned short usMotor_Status = BRAKE;
 static unsigned long last_time = 0;
@@ -10,6 +11,9 @@ static float targetVelR = 0.0f;
 static float targetVelL = 0.0f;
 static uint8_t lastDirectionR = BRAKE;
 static uint8_t lastDirectionL = BRAKE;
+static float poseX = 0.0f;
+static float poseY = 0.0f;
+static float posePhi = 0.0f;
 
 static const uint8_t PWM_STEP = 2;
 static const float MAX_TARGET_VELOCITY = 400.0f;
@@ -158,6 +162,24 @@ void encoder() {
   float velR = (dt > 0) ? (voltasR / (dt / 1000.0f)) * (2.0f * PI) : 0.0f;
   float velL = (dt > 0) ? (voltasL / (dt / 1000.0f)) * (2.0f * PI) : 0.0f;
 
+  // --- Cinemática diferencial ---
+  const float wheelRadius = 0.125f;   // metros
+  const float wheelBase = 0.62f;       // distância entre rodas (m)
+
+  float v_r = velR * wheelRadius;      // m/s
+  float v_l = velL * wheelRadius;      // m/s
+  float V = 0.5f * (v_r + v_l);        // velocidade linear (m/s)
+  float w = (v_r - v_l) / wheelBase;   // velocidade angular (rad/s)
+
+  float dt_s = dt / 1000.0f;           // janela em segundos
+  float x_dot = V * cos(posePhi);
+  float y_dot = V * sin(posePhi);
+  float phi_dot = w;
+
+  poseX += x_dot * dt_s;
+  poseY += y_dot * dt_s;
+  posePhi += phi_dot * dt_s;
+
   float targetMagR = fabs(targetVelR);
   float targetMagL = fabs(targetVelL);
 
@@ -170,13 +192,22 @@ void encoder() {
   motorGo(MOTOR_L, lastDirectionL, currentPwmL);
 
   // --- Impressão desacoplada (opcional) ---
-    if ((now - last_print) >= print_ms) {
+  if ((now - last_print) >= print_ms) {
     last_print = now;
     Serial.print("VelR: ");
     Serial.println(velR);
     Serial.print("VelL: ");
     Serial.println(velL);
+    Serial.print("x_dot: ");
+    Serial.println(x_dot);
+    Serial.print("y_dot: ");
+    Serial.println(y_dot);
+    Serial.print("phi_dot: ");
+    Serial.println(phi_dot);
   }
+
+  // Publica odometria via MQTT (não bloqueia se desconectado)
+  net_publish_odometry(x_dot, y_dot, phi_dot);
 }
 
 void Stop() {
