@@ -84,12 +84,12 @@ static void synchronizeWheels(MotionCommand command, float velR, float velL) {
 void setupPCNT() {
   pcnt_config_t configR;
   configR.pulse_gpio_num = ENCODER_RA;
-  configR.ctrl_gpio_num = PCNT_PIN_NOT_USED;
+  configR.ctrl_gpio_num = ENCODER_RB;
   configR.channel = PCNT_CHANNEL_0;
   configR.unit = PCNT_UNIT_0;
   configR.pos_mode = PCNT_COUNT_INC;
-  configR.neg_mode = PCNT_COUNT_DIS;
-  configR.lctrl_mode = PCNT_MODE_KEEP;
+  configR.neg_mode = PCNT_COUNT_DEC;
+  configR.lctrl_mode = PCNT_MODE_REVERSE;
   configR.hctrl_mode = PCNT_MODE_KEEP;
   configR.counter_h_lim = 10000;
   configR.counter_l_lim = -10000;
@@ -99,6 +99,7 @@ void setupPCNT() {
 
   pcnt_config_t configL = configR;
   configL.pulse_gpio_num = ENCODER_LA;
+  configL.ctrl_gpio_num = ENCODER_LB;
   configL.unit = PCNT_UNIT_1;
   pcnt_unit_config(&configL);
   pcnt_counter_clear(PCNT_UNIT_1);
