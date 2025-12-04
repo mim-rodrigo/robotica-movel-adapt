@@ -160,8 +160,13 @@ void encoder() {
   // --- Cálculo de velocidades (rad/s) ---
   float voltasR = contagemR / (float)PULSOS_POR_VOLTA;
   float voltasL = contagemL / (float)PULSOS_POR_VOLTA;
-  float velR = (dt > 0) ? (voltasR / (dt / 1000.0f)) * (2.0f * PI) : 0.0f;
-  float velL = (dt > 0) ? (voltasL / (dt / 1000.0f)) * (2.0f * PI) : 0.0f;
+  float velR_motor = (dt > 0) ? (voltasR / (dt / 1000.0f)) * (2.0f * PI) : 0.0f;
+  float velL_motor = (dt > 0) ? (voltasL / (dt / 1000.0f)) * (2.0f * PI) : 0.0f;
+
+  // Corrige para a velocidade na roda (redução 1:147,4)
+  const float gearReduction = 147.4f;
+  float velR = velR_motor / gearReduction;
+  float velL = velL_motor / gearReduction;
 
   // --- Cinemática diferencial ---
   const float wheelRadius = 0.125f;   // metros
@@ -184,10 +189,10 @@ void encoder() {
   float targetMagR = fabs(targetVelR);
   float targetMagL = fabs(targetVelL);
 
-  currentPwmR = adjustPwm(currentPwmR, fabs(velR), targetMagR);
-  currentPwmL = adjustPwm(currentPwmL, fabs(velL), targetMagL);
+  currentPwmR = adjustPwm(currentPwmR, fabs(velR_motor), targetMagR);
+  currentPwmL = adjustPwm(currentPwmL, fabs(velL_motor), targetMagL);
 
-  synchronizeWheels(g_last_applied_command, velR, velL);
+  synchronizeWheels(g_last_applied_command, velR_motor, velL_motor);
 
   motorGo(MOTOR_R, lastDirectionR, currentPwmR);
   motorGo(MOTOR_L, lastDirectionL, currentPwmL);
@@ -195,9 +200,13 @@ void encoder() {
   // --- Impressão desacoplada (opcional) ---
   if ((now - last_print) >= print_ms) {
     last_print = now;
-    Serial.print("VelR: ");
+    Serial.print("VelR_motor: ");
+    Serial.println(velR_motor);
+    Serial.print("VelL_motor: ");
+    Serial.println(velL_motor);
+    Serial.print("VelR_wheel: ");
     Serial.println(velR);
-    Serial.print("VelL: ");
+    Serial.print("VelL_wheel: ");
     Serial.println(velL);
     Serial.print("x_dot: ");
     Serial.println(x_dot);
