@@ -11,10 +11,11 @@ usando o mesmo host e credenciais da placa.
 2. Adicione os arquivos `index.html`, `styles.css` e `sketch.js` deste diretório
    (mesmo conteúdo, mesmas referências de CDN).
 3. Clique em **Play**. A tela mostrará o carrinho centralizado, seu rastro e os
-   indicadores de velocidade e distância.
-4. Use o botão **Conectar** para se inscrever no tópico MQTT
-   (`x_dot|y_dot|phi_dot`, em m/s e rad/s). O botão **Resetar trajetória** limpa
-   o rastro e zera a distância.
+   indicadores de posição e distância.
+4. Use o botão **Conectar** para se inscrever no tópico MQTT.
+   O formato esperado é um JSON com `{ "x": 0.0, "y": 0.0, "phi": 0.0 }`
+   (metros e radianos). O botão **Resetar trajetória** limpa o rastro e zera a
+   distância.
 
 A escala do desenho respeita as dimensões reais do robô (75 × 45 cm de corpo,
 rodas conforme tabela) e mantém o carrinho sempre no centro da visualização.
