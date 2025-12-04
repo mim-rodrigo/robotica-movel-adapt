@@ -15,6 +15,8 @@ static float poseX = 0.0f;
 static float poseY = 0.0f;
 static float posePhi = 0.0f;
 
+static const bool kPublishDebugOdometry = true;
+
 static const uint8_t PWM_STEP = 2;
 static const float MAX_TARGET_VELOCITY = 400.0f;
 static const uint8_t DEFAULT_PWM_FORWARD = 159;
@@ -185,6 +187,9 @@ void encoder() {
   poseX += x_dot * dt_s;
   poseY += y_dot * dt_s;
   posePhi += phi_dot * dt_s;
+  if (posePhi > PI || posePhi < -PI) {
+    posePhi = fmod(posePhi + PI, 2.0f * PI) - PI;
+  }
 
   float targetMagR = fabs(targetVelR);
   float targetMagL = fabs(targetVelL);
@@ -214,10 +219,20 @@ void encoder() {
     Serial.println(y_dot);
     Serial.print("phi_dot: ");
     Serial.println(phi_dot);
+    Serial.print("poseX: ");
+    Serial.println(poseX);
+    Serial.print("poseY: ");
+    Serial.println(poseY);
+    Serial.print("posePhi: ");
+    Serial.println(posePhi);
   }
 
   // Publica odometria via MQTT (não bloqueia se desconectado)
-  net_publish_odometry(x_dot, y_dot, phi_dot);
+  net_publish_odometry(poseX, poseY, posePhi);
+
+  if (kPublishDebugOdometry) {
+    net_publish_odometry_debug(contagemR, contagemL, velR, velL, dt);
+  }
 }
 
 void Stop() {

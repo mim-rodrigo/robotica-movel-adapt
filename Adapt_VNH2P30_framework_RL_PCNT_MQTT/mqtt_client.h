@@ -17,6 +17,8 @@ void net_set_topic(const char* topic);
 void net_set_pub_topic(const char* topic);
 // Define o tópico usado para publicar odometria
 void net_set_odom_topic(const char* topic);
+// Define o tópico de debug de odometria (dados brutos)
+void net_set_odom_debug_topic(const char* topic);
 
 // (Opcional) definir Root CA (PEM) para validação TLS.
 // Se definido E insecureTLS=false em net_set_broker, usará setCACert(rootCA).
@@ -25,5 +27,8 @@ void net_set_root_ca(const char* root_ca_pem);
 // (Opcional) publicar algo, caso integre com outros módulos depois.
 bool net_mqtt_publish(const char* topic, const char* payload);
 
-// Publica x', y' e phi' calculados pelo robô
-bool net_publish_odometry(float x_dot, float y_dot, float phi_dot);
+// Publica pose estimada {x, y, phi}
+bool net_publish_odometry(float x, float y, float phi);
+// (Opcional) publica contagens e velocidades medidas
+bool net_publish_odometry_debug(int16_t contagemR, int16_t contagemL,
+                                float velR, float velL, unsigned long dt_ms);
