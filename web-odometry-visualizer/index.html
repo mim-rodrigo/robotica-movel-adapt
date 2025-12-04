@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Monitor de Odometria - p5.js + MQTT</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="styles.css" />
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.0/p5.min.js"></script>
+    <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+  </head>
+  <body>
+    <header class="top-bar">
+      <div class="title-group">
+        <div class="dot"></div>
+        <div>
+          <p class="eyebrow">p5.js • MQTT</p>
+          <h1>Monitor em tempo real</h1>
+        </div>
+      </div>
+      <div class="status" id="status">Desconectado</div>
+    </header>
+
+    <main class="layout">
+      <section class="controls">
+        <div class="card">
+          <h2>Broker HiveMQ Cloud</h2>
+          <div class="grid">
+            <label>
+              Host
+              <input id="host" type="text" />
+            </label>
+            <label>
+              Porta (WSS)
+              <input id="port" type="number" />
+            </label>
+            <label>
+              Usuário
+              <input id="username" type="text" />
+            </label>
+            <label>
+              Senha
+              <input id="password" type="password" />
+            </label>
+            <label>
+              Tópico de odometria
+              <input id="odomTopic" type="text" />
+            </label>
+          </div>
+          <div class="button-row">
+            <button id="connectBtn" class="primary">Conectar</button>
+            <button id="resetBtn" class="ghost">Resetar trajetória</button>
+          </div>
+          <p class="hint">
+            Os valores de odometria são esperados no formato
+            <code>x_dot|y_dot|phi_dot</code> (m/s e rad/s).
+          </p>
+        </div>
+
+        <div class="card highlight">
+          <h2>Estatísticas</h2>
+          <dl class="stats">
+            <div>
+              <dt>Velocidade linear</dt>
+              <dd id="vel">0.00 m/s</dd>
+            </div>
+            <div>
+              <dt>Velocidade angular</dt>
+              <dd id="angVel">0.00 rad/s</dd>
+            </div>
+            <div>
+              <dt>Distância total</dt>
+              <dd id="distance">0.00 m</dd>
+            </div>
+          </dl>
+        </div>
+      </section>
+
+      <section class="canvas-wrapper">
+        <div id="p5-container" class="canvas-frame"></div>
+      </section>
+    </main>
+
+    <script src="sketch.js"></script>
+  </body>
+</html>
