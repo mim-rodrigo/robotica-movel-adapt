@@ -24,6 +24,7 @@ static bool        DEF_INSECURE_TLS  = true;  // true = conexão sem validação
 static const char* DEF_SUB_TOPIC     = "facemesh/cmd";
 static const char* DEF_PUB_TOPIC     = "facemesh/pong";
 static const char* DEF_ODOM_TOPIC    = "robot/odometry";
+static const char* DEF_ODOM_DEBUG    = "robot/odometry/debug";
 
 // Root CA (opcional). Exemplo:
 // static const char* DEF_ROOT_CA_PEM = R"EOF(
@@ -48,6 +49,7 @@ static bool        g_insecureTLS = DEF_INSECURE_TLS;
 static const char* g_sub_topic   = DEF_SUB_TOPIC;
 static const char* g_pub_topic   = DEF_PUB_TOPIC;
 static const char* g_odom_topic  = DEF_ODOM_TOPIC;
+static const char* g_odom_debug  = DEF_ODOM_DEBUG;
 static const char* g_root_ca_pem = DEF_ROOT_CA_PEM;
 
 // =======================
@@ -138,6 +140,10 @@ void net_set_pub_topic(const char* topic) {
 
 void net_set_odom_topic(const char* topic) {
   g_odom_topic = topic;
+}
+
+void net_set_odom_debug_topic(const char* topic) {
+  g_odom_debug = topic;
 }
 
 void net_set_root_ca(const char* root_ca_pem) {
@@ -246,20 +252,47 @@ bool net_mqtt_publish(const char* topic, const char* payload) {
   return g_mqtt_client.publish(topic, payload);
 }
 
-bool net_publish_odometry(float x_dot, float y_dot, float phi_dot) {
+bool net_publish_odometry(float x, float y, float phi) {
   if (!g_odom_topic || !*g_odom_topic) {
     return false;
   }
 
   String payload;
-  payload.reserve(48);
-  payload += String(x_dot, 6);
-  payload += '|';
-  payload += String(y_dot, 6);
-  payload += '|';
-  payload += String(phi_dot, 6);
+  payload.reserve(64);
+  payload += F("{");
+  payload += F("\"x\":");
+  payload += String(x, 6);
+  payload += F(",\"y\":");
+  payload += String(y, 6);
+  payload += F(",\"phi\":");
+  payload += String(phi, 6);
+  payload += F("}");
 
   return net_mqtt_publish(g_odom_topic, payload.c_str());
+}
+
+bool net_publish_odometry_debug(int16_t contagemR, int16_t contagemL,
+                                float velR, float velL, unsigned long dt_ms) {
+  if (!g_odom_debug || !*g_odom_debug) {
+    return false;
+  }
+
+  String payload;
+  payload.reserve(96);
+  payload += F("{");
+  payload += F("\"contagemR\":");
+  payload += contagemR;
+  payload += F(",\"contagemL\":");
+  payload += contagemL;
+  payload += F(",\"velR\":");
+  payload += String(velR, 6);
+  payload += F(",\"velL\":");
+  payload += String(velL, 6);
+  payload += F(",\"dt\":");
+  payload += dt_ms;
+  payload += F("}");
+
+  return net_mqtt_publish(g_odom_debug, payload.c_str());
 }
 
 static void handle_command_message(const String& payload) {

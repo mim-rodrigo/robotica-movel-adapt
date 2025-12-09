@@ -13,15 +13,15 @@ const SCALE = 80; // pixels por metro
 const TRAIL_LIMIT = 8000;
 
 let pose = { x: 0, y: 0, phi: 0 };
-let velocities = { x: 0, y: 0, phi: 0 };
-let lastUpdate = null;
+let lastPose = null;
 let trail = [];
 let totalDistance = 0;
 
 let client = null;
 let statusLabel;
-let velLabel;
-let angVelLabel;
+let xLabel;
+let yLabel;
+let headingLabel;
 let distanceLabel;
 let connectBtn;
 let resetBtn;
@@ -39,8 +39,9 @@ function setup() {
   canvas.parent('p5-container');
 
   statusLabel = select('#status');
-  velLabel = select('#vel');
-  angVelLabel = select('#angVel');
+  xLabel = select('#poseX');
+  yLabel = select('#poseY');
+  headingLabel = select('#poseHeading');
   distanceLabel = select('#distance');
   connectBtn = select('#connectBtn');
   resetBtn = select('#resetBtn');
@@ -61,41 +62,11 @@ function draw() {
   background('#0b1021');
   drawGrid();
 
-  const now = millis();
-  if (lastUpdate === null) {
-    lastUpdate = now;
-  }
-  const dt = (now - lastUpdate) / 1000;
-  lastUpdate = now;
-
-  updatePose(dt);
   translate(width / 2, height / 2);
   scale(1, -1);
 
   drawTrail();
   drawRobot();
-}
-
-function updatePose(dt) {
-  const dx = velocities.x * dt;
-  const dy = velocities.y * dt;
-  const dphi = velocities.phi * dt;
-
-  pose.x += dx;
-  pose.y += dy;
-  pose.phi += dphi;
-
-  const stepDistance = sqrt(dx * dx + dy * dy);
-  totalDistance += stepDistance;
-
-  trail.push({ x: pose.x, y: pose.y, phi: pose.phi });
-  if (trail.length > TRAIL_LIMIT) {
-    trail.shift();
-  }
-
-  velLabel.html(`${(sqrt(velocities.x ** 2 + velocities.y ** 2)).toFixed(2)} m/s`);
-  angVelLabel.html(`${velocities.phi.toFixed(2)} rad/s`);
-  distanceLabel.html(`${totalDistance.toFixed(2)} m`);
 }
 
 function drawGrid() {
@@ -203,6 +174,31 @@ function drawRobot() {
   pop();
 }
 
+function applyPoseUpdate(newPose) {
+  if (!Number.isFinite(newPose.x) || !Number.isFinite(newPose.y) || !Number.isFinite(newPose.phi)) {
+    return;
+  }
+
+  if (lastPose) {
+    const dx = newPose.x - lastPose.x;
+    const dy = newPose.y - lastPose.y;
+    totalDistance += sqrt(dx * dx + dy * dy);
+  }
+
+  pose = newPose;
+  lastPose = { ...pose };
+
+  trail.push({ x: pose.x, y: pose.y, phi: pose.phi });
+  if (trail.length > TRAIL_LIMIT) {
+    trail.shift();
+  }
+
+  xLabel.html(`${pose.x.toFixed(3)} m`);
+  yLabel.html(`${pose.y.toFixed(3)} m`);
+  headingLabel.html(`${degrees(pose.phi).toFixed(1)} °`);
+  distanceLabel.html(`${totalDistance.toFixed(2)} m`);
+}
+
 function connectToBroker() {
   const host = select('#host').value();
   const port = Number(select('#port').value());
@@ -249,25 +245,26 @@ function connectToBroker() {
   });
 
   client.on('message', (topic, payload) => {
-    const msg = payload.toString();
-    const parts = msg.split('|').map((p) => p.trim());
-    if (parts.length < 3) return;
-
-    const [xDotStr, yDotStr, phiDotStr] = parts;
-    const xDot = parseFloat(xDotStr);
-    const yDot = parseFloat(yDotStr);
-    const phiDot = parseFloat(phiDotStr);
-
-    if (Number.isFinite(xDot) && Number.isFinite(yDot) && Number.isFinite(phiDot)) {
-      velocities = { x: xDot, y: yDot, phi: phiDot };
+    try {
+      const msg = JSON.parse(payload.toString());
+      applyPoseUpdate({
+        x: Number(msg.x),
+        y: Number(msg.y),
+        phi: Number(msg.phi),
+      });
+    } catch (err) {
+      console.warn('Mensagem de odometria inválida', err);
     }
   });
 }
 
 function resetPath() {
   pose = { x: 0, y: 0, phi: 0 };
-  velocities = { x: 0, y: 0, phi: 0 };
+  lastPose = { ...pose };
   trail = [];
   totalDistance = 0;
-  lastUpdate = millis();
+  xLabel.html('0.000 m');
+  yLabel.html('0.000 m');
+  headingLabel.html('0.0 °');
+  distanceLabel.html('0.00 m');
 }

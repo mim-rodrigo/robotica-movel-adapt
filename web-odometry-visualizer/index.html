@@ -57,8 +57,8 @@
             <button id="resetBtn" class="ghost">Resetar trajetória</button>
           </div>
           <p class="hint">
-            Os valores de odometria são esperados no formato
-            <code>x_dot|y_dot|phi_dot</code> (m/s e rad/s).
+            Os valores de odometria são esperados como JSON:
+            <code>{ "x": 0.0, "y": 0.0, "phi": 0.0 }</code> (metros e radianos).
           </p>
         </div>
 
@@ -66,12 +66,16 @@
           <h2>Estatísticas</h2>
           <dl class="stats">
             <div>
-              <dt>Velocidade linear</dt>
-              <dd id="vel">0.00 m/s</dd>
+              <dt>Posição X</dt>
+              <dd id="poseX">0.000 m</dd>
             </div>
             <div>
-              <dt>Velocidade angular</dt>
-              <dd id="angVel">0.00 rad/s</dd>
+              <dt>Posição Y</dt>
+              <dd id="poseY">0.000 m</dd>
+            </div>
+            <div>
+              <dt>Ângulo</dt>
+              <dd id="poseHeading">0.0 °</dd>
             </div>
             <div>
               <dt>Distância total</dt>
